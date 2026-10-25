@@ -1,0 +1,14 @@
+/* Transfer only the public OAuth client identifier; never tokens or notes. */
+(function(root){'use strict';
+const origin=location.origin;
+const valid=id=>typeof id==='string'&&id.length<=250&&/^[a-zA-Z0-9._-]+\.apps\.googleusercontent\.com$/.test(id);
+function makeLink(id){if(!valid(id))throw Error('먼저 Google 연결 설정을 저장해주세요.');return origin+'/#setup-drive='+encodeURIComponent(id)}
+function parseLink(value){try{const url=new URL(value);if(url.origin!==origin||url.pathname!=='/'||!url.hash.startsWith('#setup-drive='))return null;const id=decodeURIComponent(url.hash.slice(13));return valid(id)?id:null}catch{return null}}
+const api={valid,makeLink,parseLink};root.MEMOASetup=api;if(typeof module!=='undefined'&&module.exports)module.exports=api;if(typeof document==='undefined')return;
+const A=MEMOAApp,previousSettings=settings;
+settings=function(){previousSettings();const card=document.createElement('div');card.className='storage-card';card.style.marginTop='16px';const configured=localStorage.getItem('memoa-google-client');card.innerHTML='<b>다른 기기 연결</b><p>PC의 연결 설정을 링크로 옮기세요. 모바일에서 긴 ID를 입력할 필요가 없습니다.</p><button class="primary" onclick="MEMOASetup.share()">모바일 연결 링크 만들기</button>';document.querySelector('.backup-actions').before(card);if(!valid(configured)){card.querySelector('button').disabled=true;card.insertAdjacentHTML('beforeend','<small>아래 Google 연결 설정을 먼저 저장해주세요.</small>')}};
+api.share=()=>{try{const link=makeLink(localStorage.getItem('memoa-google-client'));modal('<h2>모바일로 연결 설정 옮기기</h2><p>아래 링크를 복사해 본인에게 카카오톡이나 이메일로 보내세요. 모바일의 Safari·Chrome에서 링크를 열면 연결 설정을 가져옵니다.</p><textarea id="mobile-setup-link" aria-label="모바일 연결 링크" readonly style="width:100%;min-height:110px;font-size:16px;overflow-wrap:anywhere">'+esc(link)+'</textarea><p>링크에는 공개 클라이언트 ID만 담깁니다. 메모와 Google 로그인 정보는 포함하지 않습니다.</p><div class="row"><button onclick="closeModal()">닫기</button><button class="primary" onclick="MEMOASetup.copy()">링크 복사</button></div>')}catch(e){toast(e.message)}};
+api.copy=async()=>{let input=document.getElementById('mobile-setup-link');try{await navigator.clipboard.writeText(input.value);toast('모바일 연결 링크를 복사했습니다.')}catch{input.focus();input.select();toast('선택된 링크를 복사해주세요.')}};
+const incoming=parseLink(location.href);
+if(incoming){history.replaceState(null,'',location.pathname+location.search);A.ready.then(()=>{modal('<h2>MEMOA 연결 설정 가져오기</h2><p>PC에서 보낸 Google Drive 연결 설정을 이 기기에 저장합니다. 이후 PC와 같은 구글 계정으로 로그인하세요.</p><div class="row"><button onclick="closeModal()">취소</button><button id="accept-mobile-setup" class="primary">설정 저장</button></div>');document.getElementById('accept-mobile-setup').onclick=()=>{if(A.drive.token&&localStorage.getItem('memoa-google-client')!==incoming)return toast('기존 Google 연결을 해제한 다음 설정을 변경해주세요.');localStorage.setItem('memoa-google-client',incoming);settings();toast('설정을 저장했습니다. Google 연결 및 동기화를 눌러주세요.')}})}
+})(typeof globalThis!=='undefined'?globalThis:this);
