@@ -35,11 +35,10 @@ function ideaHint(host,n){
   if(!host)return;
   let hint=host.nextElementSibling&&host.nextElementSibling.classList?.contains('idea-hint')?host.nextElementSibling:null;
   if(!n||n.type!=='idea'||host.hidden){if(hint)hint.remove();return}
+  const c=lineCount(host);
+  if(c>IDEA_MAX){if(hint)hint.remove();A.ideaToMemo?.(n,host);return}
   if(!hint){hint=document.createElement('div');hint.className='idea-hint';host.after(hint)}
-  const c=lineCount(host),over=c>IDEA_MAX;
-  hint.classList.toggle('over',over);
-  hint.innerHTML=over?`<span>✧ 아이디어는 ${IDEA_MAX}줄까지예요 (${c}줄). 길어진 생각은 메모로 바꿔 두세요.</span><button type="button">메모로 전환</button>`:`<span>✧ 아이디어 · ${c}/${IDEA_MAX}줄</span>`;
-  const b=hint.querySelector('button');if(b)b.onclick=()=>{n.type='note';persist();hint.remove();renderEditor();renderList();toast('메모로 전환했습니다.')};
+  hint.innerHTML=`<span>✧ ${c}/${IDEA_MAX}줄 · 넘으면 일반 메모로 바뀝니다</span>`;
 }
 A.ideaHint=()=>{ideaHint($('editor'),note());ideaHint($('quick-body'),note())};
 ['editor','quick-body'].forEach(id=>{const el=$(id);if(el)el.addEventListener('input',()=>setTimeout(A.ideaHint,0))});
@@ -321,4 +320,65 @@ A.calendarSetup=function(){modal(`<div class="eyebrow">GOOGLE CALENDAR</div><h2>
   $('cal-on').onclick=()=>{db.calendarSync={...(db.calendarSync||{}),on:true};persist();closeModal();A.connectGoogle()};
   const off=$('cal-off');if(off)off.onclick=()=>{db.calendarSync={...(db.calendarSync||{}),on:false};persist();closeModal();renderEditor();toast('캘린더 연동을 껐습니다. 이미 등록된 일정은 캘린더에 그대로 남습니다.')}};
 const prevSettings=settings;settings=function(){prevSettings.apply(this,arguments);const anchor=document.querySelector('#dialog .backup-actions');if(!anchor)return;const card=document.createElement('div');card.className='storage-card cal-card';card.innerHTML=`<b>Google 캘린더</b> <span class="chip">${on()?(canPush()?'연동 중':'연동 켜짐 · 권한 연결 필요'):'꺼짐'}</span><p>스케줄러 일정을 구글 캘린더로 보냅니다.</p><button type="button" class="${on()?'':'primary'}" onclick="MEMOAApp.calendarSetup()">${on()?'캘린더 설정':'캘린더 연동 켜기'}</button>`;anchor.before(card)};
+})();
+
+/* ===== 4차 (2026-10-29): 아이디어 = 긴 포스트잇, 독서노트 Tab 이동 ===== */
+(function(){'use strict';
+const A=window.MEMOAApp;
+const COLORS=[['#f8e7a0','노랑'],['#c6e1c0','초록'],['#c5d9ed','파랑'],['#f2c8d1','분홍'],['#d9caec','보라']];
+const DEF='#f8e7a0';
+const colorOf=n=>COLORS.some(([c])=>c===n?.color)?n.color:DEF;
+const css=`
+#paper.idea-mode #document-format,#paper.idea-mode #toolbar,#paper.idea-mode #title,#paper.idea-mode .eyebrow{display:none!important}
+#paper.idea-mode #editor{background:var(--idea-color,#f8e7a0);border-radius:6px;padding:12px 14px;min-height:0;box-shadow:0 1px 3px rgba(0,0,0,.08);line-height:1.6}
+#paper.idea-mode #editor:empty:before{content:'떠오른 생각을 한 줄로…';color:#9a9585}
+.idea-bar{display:flex;gap:8px;align-items:center;margin:0 0 10px;flex-wrap:wrap}
+.idea-bar .swatch{width:22px;height:22px;border-radius:50%;border:2px solid transparent;cursor:pointer;padding:0}
+.idea-bar .swatch.on{border-color:#5f6758}
+.idea-bar .label{font-size:12px;color:#8a9083;margin-right:4px}
+.idea-bar .link-btn{margin-left:auto}
+.note.idea-card{background:var(--idea-color,#f8e7a0)!important}
+.quick-note.idea-quick{background:var(--idea-color,#f8e7a0)!important}
+#quick-body.idea-quick{background:var(--idea-color,#f8e7a0);border-radius:6px;padding:12px;min-height:3em}
+.quick-idea-bar{display:flex;gap:8px;align-items:center;margin:6px 0}
+.quick-idea-bar .swatch{width:26px;height:26px;border-radius:50%;border:2px solid transparent;padding:0}
+.quick-idea-bar .swatch.on{border-color:#5f6758}
+.idea-quick-mode .quick-tools button[onclick*="quick-image"]{display:none}`;
+const st=document.createElement('style');st.textContent=css;document.head.append(st);
+const firstLine=n=>{const d=document.createElement('div');d.innerHTML=String(n.html||'').replace(/<br\s*\/?>/gi,'\n').replace(/<\/(p|div|li|h[1-6])>/gi,'\n');return (d.textContent||'').split('\n').map(s=>s.trim()).find(Boolean)||''};
+const swatches=(n,cls)=>COLORS.map(([c,l])=>`<button type="button" class="swatch ${colorOf(n)===c?'on':''}" data-color="${c}" style="background:${c}" aria-label="${l}"></button>`).join('');
+function setColor(n,c){if(!n||!COLORS.some(([x])=>x===c))return;n.color=c;persist();applyIdea();renderList()}
+
+/* 아이디어 링크: 복사해 둔 주소를 기본값으로 */
+A.ideaLink=async function(){let clip='';try{const t=await navigator.clipboard.readText();if(/^https?:\/\//i.test(t.trim()))clip=t.trim()}catch{}const url=prompt('링크 주소 (https://...)',clip);if(!url)return;try{const u=new URL(url);if(!['http:','https:'].includes(u.protocol))throw 0;const host=document.activeElement===$('quick-body')||$('quick-body')?.contains(document.activeElement)?$('quick-body'):$('editor');host.focus();document.execCommand('insertHTML',false,` <a href="${esc(u.href)}" target="_blank" rel="noopener">${esc(u.hostname+u.pathname.replace(/\/$/,''))}</a> `);if(host.id==='editor')update();else host.dispatchEvent(new Event('input',{bubbles:true}))}catch{toast('올바른 웹 주소를 입력해주세요.')}};
+
+/* 6줄째에서 일반 메모로 전환 — 커서를 잃지 않게 화면만 바꿈 */
+A.ideaToMemo=function(n,host){if(!n||n.type!=='idea')return;if(host&&host.id==='editor')update();n.type='note';if(!n.title||n.autoTitle){n.title=firstLine(n).slice(0,80);delete n.autoTitle}persist();applyIdea();const t=$('title');if(t&&!t.value)t.value=n.title;const nt=$('notetype');if(nt)nt.value='note';renderList();toast('다섯 줄을 넘어 일반 메모로 바뀌었습니다.')};
+
+/* PC 편집기: 아이디어면 색 상자 + 색상·링크만 */
+function applyIdea(){const n=note(),paper=$('paper'),ed=$('editor');if(!paper||!ed)return;const idea=n&&n.type==='idea'&&!n.deleted;paper.classList.toggle('idea-mode',!!idea);let bar=$('idea-bar');
+  if(!idea){bar?.remove();paper.style.removeProperty('--idea-color');return}
+  paper.style.setProperty('--idea-color',colorOf(n));
+  if(!bar){bar=document.createElement('div');bar.id='idea-bar';bar.className='idea-bar';ed.before(bar)}
+  bar.innerHTML=`<span class="label">✧ 아이디어</span>${swatches(n)}<button type="button" class="link-btn" onclick="MEMOAApp.ideaLink()">↗ 링크</button>`;
+  bar.querySelectorAll('[data-color]').forEach(b=>b.onclick=()=>setColor(note(),b.dataset.color));
+  applyQuick()}
+/* 휴대폰 기록 화면도 같은 색 상자 */
+function applyQuick(){const qb=$('quick-body');if(!qb)return;const n=note(),idea=n&&n.type==='idea'&&!qb.hidden;qb.classList.toggle('idea-quick',!!idea);document.body.classList.toggle('idea-quick-mode',!!idea);let bar=$('quick-idea-bar');
+  if(!idea){bar?.remove();return}
+  qb.style.setProperty('--idea-color',colorOf(n));
+  if(!bar){bar=document.createElement('div');bar.id='quick-idea-bar';bar.className='quick-idea-bar';qb.before(bar)}
+  bar.innerHTML=swatches(n);bar.querySelectorAll('[data-color]').forEach(b=>b.onclick=()=>setColor(note(),b.dataset.color))}
+const prevRE=renderEditor;renderEditor=function(){prevRE.apply(this,arguments);applyIdea()};
+if($('quick-body')){let qt=null;new MutationObserver(()=>{clearTimeout(qt);qt=setTimeout(applyQuick,30)}).observe($('quick-body'),{attributes:true,attributeFilter:['hidden'],childList:true})}
+const prevNew=newNote;newNote=function(data={}){if(data&&data.type==='idea'&&!data.color)data={...data,color:DEF};return prevNew.call(this,data)};
+
+/* 목록 카드 색 (PC·휴대폰) */
+const prevRL=renderList;renderList=function(){prevRL.apply(this,arguments);document.querySelectorAll('#notes .note.idea-card[data-id]').forEach(el=>{const n=db.notes.find(x=>x.id===el.dataset.id);el.style.setProperty('--idea-color',colorOf(n))})};
+const qn=$('quick-notes');if(qn){const paint=()=>qn.querySelectorAll('[data-quick-note]').forEach(el=>{const n=db.notes.find(x=>x.id===el.dataset.quickNote);const idea=n?.type==='idea';el.classList.toggle('idea-quick',idea);if(idea)el.style.setProperty('--idea-color',colorOf(n))});new MutationObserver(paint).observe(qn,{childList:true});paint()}
+
+/* 독서노트: Tab = 다음 칸, 마지막 칸에서 Tab = 새 챕터, Shift+Tab = 이전 칸 */
+$('editor').addEventListener('keydown',e=>{if(e.key!=='Tab')return;const td=e.target.closest?.('.chapter-table td')||window.getSelection()?.anchorNode?.parentElement?.closest?.('.chapter-table td');if(!td||!$('editor').contains(td))return;e.preventDefault();e.stopPropagation();const cells=[...$('editor').querySelectorAll('.chapter-table tbody td')];let i=cells.indexOf(td)+(e.shiftKey?-1:1);if(i>=cells.length){window.MEMOADoc?.addChapter?.();return}if(i<0)return;const next=cells[i],r=document.createRange();r.selectNodeContents(next);r.collapse(false);const s=window.getSelection();s.removeAllRanges();s.addRange(r);next.focus?.()},true);
+const prevAdd=window.MEMOADoc?.addChapter;if(prevAdd)window.MEMOADoc.addChapter=function(){prevAdd();const row=$('editor').querySelector('.chapter-table tbody tr:last-child td');if(row){const r=document.createRange();r.selectNodeContents(row);r.collapse(true);const s=window.getSelection();s.removeAllRanges();s.addRange(r)}};
+applyIdea();renderList();
 })();

@@ -1,7 +1,7 @@
 /* MEMOA data core: deterministic revision merge and portable backup validation. */
 (function(root){'use strict';
 const copy=v=>JSON.parse(JSON.stringify(v));
-const fields=['title','html','folder','tags','type','pin','deleted','template','versionFamily','versionLabel','diaryDate','mood','schedulerDate','url','summary','summarySource','autoTitle','ref','clipId','clipVersion','aiState','aiSummary','aiProvider','aiError','aiTags','links','book','schedule','calendar','trashedWithFolder'];
+const fields=['title','html','folder','tags','type','pin','deleted','template','versionFamily','versionLabel','diaryDate','mood','schedulerDate','url','summary','summarySource','autoTitle','ref','clipId','clipVersion','aiState','aiSummary','aiProvider','aiError','aiTags','links','book','schedule','calendar','trashedWithFolder','color'];
 function hash(s){let h=2166136261;for(let i=0;i<s.length;i++){h^=s.charCodeAt(i);h=Math.imul(h,16777619)}return (h>>>0).toString(16).padStart(8,'0')}
 function signature(n){return hash(JSON.stringify(fields.map(k=>k==='html'?sanitizeHTML(n[k]||''):n[k]??null)))}
 function combineClock(a={},b={}){const c={};for(const k of new Set([...Object.keys(a),...Object.keys(b)])){if(/^[a-zA-Z0-9_-]{1,100}$/.test(k))c[k]=Math.max(Number(a[k])||0,Number(b[k])||0)}return c}
