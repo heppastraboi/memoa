@@ -382,3 +382,177 @@ $('editor').addEventListener('keydown',e=>{if(e.key!=='Tab')return;const td=e.ta
 const prevAdd=window.MEMOADoc?.addChapter;if(prevAdd)window.MEMOADoc.addChapter=function(){prevAdd();const row=$('editor').querySelector('.chapter-table tbody tr:last-child td');if(row){const r=document.createRange();r.selectNodeContents(row);r.collapse(true);const s=window.getSelection();s.removeAllRanges();s.addRange(r)}};
 applyIdea();renderList();
 })();
+
+/* ===== 5차 (2026-10-29): 백업 알림 — 마지막 백업 후 30일 ===== */
+(function(){'use strict';
+const A=window.MEMOAApp,DAY=864e5,LIMIT=30,SNOOZE=3;
+const SINCE='memoa-backup-since',LATER='memoa-backup-later';
+const st=document.createElement('style');st.textContent=`
+.backup-nudge{position:fixed;left:50%;bottom:18px;transform:translateX(-50%);z-index:9998;display:flex;gap:10px;align-items:center;padding:10px 10px 10px 16px;border-radius:12px;background:#fffaf0;border:1px solid #e3c98f;box-shadow:0 6px 20px rgba(0,0,0,.12);font-size:14px;max-width:calc(100vw - 24px)}
+.backup-nudge b{color:#8a5a12}
+.backup-nudge button{white-space:nowrap}`;document.head.append(st);
+const lastAt=()=>Number(db.backupInfo?.at)||0;
+const get=k=>{try{return Number(localStorage.getItem(k))||0}catch{return 0}};
+const set=(k,v)=>{try{localStorage.setItem(k,String(v))}catch{}};
+if(!get(SINCE))set(SINCE,Date.now());
+// 백업할 때마다 기록 → Drive 동기화로 다른 기기도 알림 해제
+const prevBackup=A.backup;A.backup=async function(){const r=await prevBackup.apply(this,arguments);db.backupInfo={at:Date.now(),by:A.device||''};persist();hide();return r};
+function daysSince(){const base=lastAt()||get(SINCE);return Math.floor((Date.now()-base)/DAY)}
+function due(){if(!db.notes.some(n=>!n.deleted&&!n._sample))return false;if(Date.now()-get(LATER)<SNOOZE*DAY)return false;return daysSince()>=LIMIT}
+let bar=null;
+function hide(){bar?.remove();bar=null}
+function show(){if(bar||!due())return;const d=daysSince(),never=!lastAt();const mobile=matchMedia('(max-width:767px)').matches;
+  bar=document.createElement('div');bar.className='backup-nudge';bar.setAttribute('role','status');
+  bar.innerHTML=`<span><b>${never?'아직 백업 파일이 없습니다':`마지막 백업 후 ${d}일이 지났습니다`}</b><br><small>${mobile?'PC에서 전체 백업을 받아두면 모든 기기의 알림이 사라집니다.':'백업 파일은 메모가 망가져도 되살릴 수 있는 독립 사본입니다.'}</small></span>${mobile?'':'<button type="button" class="primary" data-act="now">지금 백업</button>'}<button type="button" data-act="later">${SNOOZE}일 뒤에</button>`;
+  bar.querySelector('[data-act="now"]')?.addEventListener('click',()=>A.backup());
+  bar.querySelector('[data-act="later"]').onclick=()=>{set(LATER,Date.now());hide()};
+  document.body.append(bar)}
+A.backupNudge=show;
+Promise.resolve().then(()=>A.ready).then(()=>setTimeout(show,1500)).catch(()=>{});
+document.addEventListener('visibilitychange',()=>{if(document.visibilityState==='visible')setTimeout(show,1500)});
+const prevSync=A.sync;A.sync=function(){const p=prevSync.apply(this,arguments);Promise.resolve(p).then(()=>{if(bar&&!due())hide()},()=>{});return p};
+})();
+
+/* ===== 6차 (2026-10-29): 링크 바로 열기 + 주소 자동 링크 ===== */
+(function(){'use strict';
+const st=document.createElement('style');st.textContent=`
+#editor a[href],#quick-body a[href],#quick-read a[href]{color:#3d6b8f;text-decoration:underline;text-underline-offset:2px;cursor:pointer;word-break:break-all}
+#editor a[href]:hover,#quick-body a[href]:hover{color:#24506f}`;document.head.append(st);
+const hosts=()=>['editor','quick-body'].map(id=>$(id)).filter(Boolean);
+const URL_RE=/https?:\/\/[^\s<>"'`]+/g;
+const trimTail=u=>{let m=u.match(/[.,;:!?)\]}'"…]+$/);if(m&&!(m[0].startsWith(')')&&u.includes('(')))u=u.slice(0,-m[0].length);return u};
+const valid=u=>{try{const x=new URL(u);return ['http:','https:'].includes(x.protocol)?x.href:null}catch{return null}};
+// 텍스트 안의 주소를 <a>로. caret: {node,offset} → 바뀐 뒤 커서 위치를 돌려줌
+function linkify(root,caret,keepCaretNode){
+  let moved=null;const tw=document.createTreeWalker(root,NodeFilter.SHOW_TEXT,{acceptNode:n=>n.parentElement?.closest('a,button,select,option,textarea,input,[contenteditable="false"]')?NodeFilter.FILTER_REJECT:URL_RE.test(n.data)?(URL_RE.lastIndex=0,NodeFilter.FILTER_ACCEPT):NodeFilter.FILTER_SKIP});
+  const nodes=[];while(tw.nextNode())nodes.push(tw.currentNode);
+  for(const node of nodes){
+    if(keepCaretNode&&caret&&caret.node===node)continue;
+    const text=node.data;URL_RE.lastIndex=0;let m,last=0;const frag=document.createDocumentFragment();let changed=false,caretAt=null;
+    while((m=URL_RE.exec(text))){const raw=trimTail(m[0]),href=valid(raw);if(!href)continue;const s=m.index,e=s+raw.length;
+      if(s>last){const t=document.createTextNode(text.slice(last,s));frag.append(t);if(caret?.node===node&&caret.offset>=last&&caret.offset<=s)caretAt={node:t,offset:caret.offset-last}}
+      const a=document.createElement('a');a.href=href;a.target='_blank';a.rel='noopener noreferrer';a.textContent=raw;frag.append(a);
+      if(caret?.node===node&&caret.offset>s&&caret.offset<=e)caretAt={after:a};
+      last=e;changed=true;URL_RE.lastIndex=e}
+    if(!changed)continue;
+    const tail=document.createTextNode(text.slice(last)||'');frag.append(tail);
+    if(caret?.node===node&&!caretAt&&caret.offset>=last)caretAt={node:tail,offset:caret.offset-last};
+    node.replaceWith(frag);if(caretAt)moved=caretAt}
+  return moved}
+function caretInfo(){const s=getSelection();if(!s.rangeCount||!s.isCollapsed)return null;const r=s.getRangeAt(0);return r.startContainer.nodeType===3?{node:r.startContainer,offset:r.startOffset}:null}
+function placeCaret(c){if(!c)return;const r=document.createRange();if(c.after){r.setStartAfter(c.after)}else{r.setStart(c.node,Math.min(c.offset,c.node.length))}r.collapse(true);const s=getSelection();s.removeAllRanges();s.addRange(r)}
+function save(host){if(host.id==='editor')update();else host.dispatchEvent(new Event('input',{bubbles:true}))}
+function run(host,{keepCaret}){const c=caretInfo();const inside=c&&host.contains(c.node);const moved=linkify(host,inside?c:null,keepCaret);if(moved&&!keepCaret)placeCaret(moved);save(host)}
+for(const host of hosts()){
+  // 붙여넣기: 기존 처리(일반 텍스트 삽입) 뒤에 바로 링크로
+  host.addEventListener('paste',()=>setTimeout(()=>{if(URL_RE.test(host.textContent)){URL_RE.lastIndex=0;run(host,{keepCaret:false})}},0));
+  // 입력: Enter 뒤(이전 줄), 다른 곳으로 나갈 때
+  host.addEventListener('keyup',e=>{if(e.key==='Enter'){URL_RE.lastIndex=0;if(URL_RE.test(host.textContent)){URL_RE.lastIndex=0;run(host,{keepCaret:true})}}});
+  host.addEventListener('focusout',()=>{URL_RE.lastIndex=0;if(URL_RE.test(host.textContent)){URL_RE.lastIndex=0;linkify(host,null,false);save(host)}});
+  // 클릭하면 새 탭으로. Alt+클릭은 편집(커서 넣기)
+  host.addEventListener('click',e=>{const a=e.target.closest?.('a[href]');if(!a||!host.contains(a)||e.altKey)return;const s=getSelection();if(s&&!s.isCollapsed&&a.contains(s.anchorNode))return;e.preventDefault();const href=valid(a.getAttribute('href'));if(href)window.open(href,'_blank','noopener,noreferrer')});
+  host.addEventListener('mouseover',e=>{const a=e.target.closest?.('a[href]');if(a&&!a.title)a.title='클릭: 새 탭에서 열기 · Alt+클릭: 글자 고치기'});
+}
+})();
+
+/* ===== 7차 (2026-10-29): 링크 길게 누르기 메뉴(열기/삭제), 메모 내보내기(Word·PDF·Markdown) ===== */
+(function(){'use strict';
+const A=window.MEMOAApp,D=window.MEMOADoc;
+const st=document.createElement('style');st.textContent=`
+@media (pointer:coarse){#editor a[href],#quick-body a[href]{-webkit-touch-callout:none;-webkit-user-select:none;user-select:none}}
+.link-sheet p{word-break:break-all;color:#5f6758;font-size:13px}
+.link-sheet .row{flex-wrap:wrap}
+.export-grid{display:grid;grid-template-columns:repeat(2,1fr);gap:8px;margin:12px 0}
+.export-grid button{display:flex;flex-direction:column;align-items:flex-start;gap:2px;padding:12px;text-align:left;border:1px solid #e3ddd2;border-radius:9px;background:#fffefa;cursor:pointer}
+.export-grid button b{font-size:15px}.export-grid button small{color:#8a9083}`;document.head.append(st);
+const valid=u=>{try{const x=new URL(u);return ['http:','https:'].includes(x.protocol)?x.href:null}catch{return null}};
+
+/* ---------- 링크 길게 누르기(휴대폰) / 오른쪽 클릭(PC): 열기 · 삭제 ---------- */
+let suppressUntil=0;
+function save(host){if(host.id==='editor')update();else host.dispatchEvent(new Event('input',{bubbles:true}))}
+function linkMenu(a,host){const href=valid(a.getAttribute('href'));if(!href)return;suppressUntil=Date.now()+700;
+  modal(`<div class="link-sheet"><div class="eyebrow">LINK</div><h2>${esc(a.textContent.trim().slice(0,60)||'링크')}</h2><p>${esc(href)}</p><div class="row"><button type="button" onclick="closeModal()">취소</button><button type="button" id="link-del" style="color:#b5533c">링크 삭제</button><button type="button" class="primary" id="link-open">열기</button></div></div>`);
+  $('link-open').onclick=()=>{closeModal();window.open(href,'_blank','noopener,noreferrer')};
+  $('link-del').onclick=()=>{A.checkpoint?.('링크 삭제 전');const prev=a.previousSibling,next=a.nextSibling;a.remove();if(prev?.nodeType===3&&next?.nodeType===3&&/\s$/.test(prev.data)&&/^\s/.test(next.data))next.data=next.data.replace(/^\s+/,'');save(host);closeModal();toast('링크를 삭제했습니다.')}}
+for(const host of ['editor','quick-body'].map(id=>$(id)).filter(Boolean)){
+  host.addEventListener('contextmenu',e=>{const a=e.target.closest?.('a[href]');if(!a||!host.contains(a))return;e.preventDefault();if(Date.now()<suppressUntil)return;linkMenu(a,host)});
+  let timer=null,sx=0,sy=0;
+  host.addEventListener('touchstart',e=>{const a=e.target.closest?.('a[href]');if(!a||!host.contains(a)||e.touches.length>1)return;sx=e.touches[0].clientX;sy=e.touches[0].clientY;clearTimeout(timer);timer=setTimeout(()=>{timer=null;linkMenu(a,host)},550)},{passive:true});
+  host.addEventListener('touchmove',e=>{if(timer&&(Math.abs(e.touches[0].clientX-sx)>10||Math.abs(e.touches[0].clientY-sy)>10)){clearTimeout(timer);timer=null}},{passive:true});
+  host.addEventListener('touchend',()=>{clearTimeout(timer);timer=null});
+  // 길게 누른 뒤 따라오는 클릭은 무시(열기 중복 방지)
+  host.addEventListener('click',e=>{if(Date.now()<suppressUntil&&e.target.closest?.('a[href]')){e.preventDefault();e.stopImmediatePropagation()}},true);
+}
+
+/* ---------- 내보내기 ---------- */
+const fname=n=>(n.title||'메모').replace(/[\\/:*?"<>|]/g,'_').trim().slice(0,80)||'메모';
+const bodyHTML=n=>{const raw=n.template&&n.template!=='free'&&D?.linear?D.linear(n):(n.html||'');const w=document.createElement('div');w.innerHTML=A.safe?A.safe(raw):raw;w.querySelectorAll('button,select,input,[data-sticky-drag]').forEach(x=>x.remove());w.querySelectorAll('[contenteditable]').forEach(x=>x.removeAttribute('contenteditable'));return w};
+const metaLine=n=>[new Date(n.created||Date.now()).toLocaleDateString('ko'),typeof folderPath==='function'?folderPath(n.folder):n.folder,(n.tags||[]).map(t=>'#'+t).join(' ')].filter(Boolean).join(' · ');
+function download(blob,name){const url=URL.createObjectURL(blob),a=document.createElement('a');a.href=url;a.download=name;document.body.append(a);a.click();a.remove();setTimeout(()=>URL.revokeObjectURL(url),2000)}
+
+/* Markdown */
+function toMD(root){
+  const inline=node=>[...node.childNodes].map(c=>{if(c.nodeType===3)return c.data.replace(/\u00a0/g,' ').replace(/([*_`\\])/g,'\\$1');if(c.nodeType!==1)return '';const t=c.tagName,inner=()=>inline(c);
+    if(t==='BR')return '  \n';if(t==='B'||t==='STRONG')return wrap(inner(),'**');if(t==='I'||t==='EM')return wrap(inner(),'*');if(t==='S'||t==='STRIKE')return wrap(inner(),'~~');if(t==='CODE')return '`'+c.textContent+'`';
+    if(t==='A'){const h=valid(c.getAttribute('href'));const tx=inner().trim()||h;return h?`[${tx}](${h})`:tx}
+    if(t==='IMG'){const s=c.getAttribute('src')||'';return /^https?:/.test(s)?`![${c.alt||''}](${s})`:`*[이미지: ${c.alt||'붙여넣은 이미지'}]*`}
+    return inner()}).join('');
+  const wrap=(s,m)=>{const t=s.trim();return t?m+t+m:''};
+  const out=[];
+  const block=(el,depth=0)=>{for(const c of el.childNodes){if(c.nodeType===3){if(c.data.trim())out.push(inline({childNodes:[c]}).trim(),'');continue}if(c.nodeType!==1)continue;const t=c.tagName;
+    if(/^H[1-6]$/.test(t)){out.push('#'.repeat(Math.min(6,+t[1]+1))+' '+inline(c).trim(),'');continue}
+    if(t==='UL'||t==='OL'){let i=1;for(const li of c.children){if(li.tagName!=='LI')continue;const sub=[...li.children].filter(x=>x.tagName==='UL'||x.tagName==='OL');const clone=li.cloneNode(true);clone.querySelectorAll(':scope>ul,:scope>ol').forEach(x=>x.remove());out.push('  '.repeat(depth)+(t==='OL'?(i++)+'. ':'- ')+inline(clone).trim());for(const s of sub)block({childNodes:[s]},depth+1)}if(!depth)out.push('');continue}
+    if(t==='TABLE'){const rows=[...c.querySelectorAll('tr')].map(r=>[...r.children].map(td=>inline(td).replace(/\|/g,'\\|').replace(/\n+/g,' ').trim()));if(rows.length){const w=Math.max(...rows.map(r=>r.length));const pad=r=>[...r,...Array(w-r.length).fill('')];out.push('| '+pad(rows[0]).join(' | ')+' |','|'+Array(w).fill(' --- ').join('|')+'|',...rows.slice(1).map(r=>'| '+pad(r).join(' | ')+' |'),'')}continue}
+    if(t==='BLOCKQUOTE'){out.push(inline(c).trim().split('\n').map(l=>'> '+l).join('\n'),'');continue}
+    if(t==='PRE'){out.push('```',c.textContent,'```','');continue}
+    if(t==='HR'){out.push('---','');continue}
+    if(t==='IMG'){out.push(inline({childNodes:[c]}),'');continue}
+    if([...c.children].some(x=>/^(P|DIV|H[1-6]|UL|OL|TABLE|BLOCKQUOTE|PRE|SECTION|ARTICLE)$/.test(x.tagName))){block(c,depth);continue}
+    const s=inline(c).trim();if(s)out.push(s,'')}};
+  block(root);return out.join('\n').replace(/\n{3,}/g,'\n\n').trim()}
+const yaml=v=>JSON.stringify(String(v??''));
+A.exportMD=function(n=note()){if(!n)return;const front=['---',`title: ${yaml(n.title||'제목 없는 메모')}`,`created: ${new Date(n.created||Date.now()).toISOString()}`,`modified: ${new Date(n.modified||Date.now()).toISOString()}`,`folder: ${yaml(n.folder)}`,`type: ${yaml(n.type||'note')}`,`format: ${yaml(n.template||'free')}`,`tags: [${(n.tags||[]).map(yaml).join(', ')}]`];
+  if(n.book)for(const [k,v] of Object.entries(n.book))if(v)front.push(`book_${k}: ${yaml(v)}`);if(n.schedulerDate&&n.template==='scheduler')front.push(`date: ${yaml(n.schedulerDate)}`);
+  const links=(n.links||[]).map(id=>db.notes.find(x=>x.id===id)).filter(Boolean).map(x=>x.title||'제목 없는 메모');if(links.length)front.push(`linked: [${links.map(yaml).join(', ')}]`);front.push('---','');
+  const md=front.join('\n')+'# '+(n.title||'제목 없는 메모')+'\n\n'+toMD(bodyHTML(n))+'\n';
+  download(new Blob([md],{type:'text/markdown;charset=utf-8'}),fname(n)+'.md');closeModal();toast('Markdown으로 내보냈습니다.')};
+
+/* PDF: 깔끔한 인쇄용 페이지 → 'PDF로 저장' */
+const pageCSS=`body{font-family:'Pretendard','Apple SD Gothic Neo','Malgun Gothic',sans-serif;color:#2b2f27;max-width:720px;margin:40px auto;padding:0 24px;line-height:1.75;font-size:15px}h1{font-size:26px;margin:0 0 4px}.meta{color:#8a9083;font-size:12px;margin-bottom:28px}h2,h3,h4{margin:1.4em 0 .4em}img{max-width:100%;height:auto}table{border-collapse:collapse;width:100%;margin:12px 0}th,td{border:1px solid #d9d2c4;padding:6px 8px;text-align:left;vertical-align:top}th{background:#f6f2ea}a{color:#2f5f86}blockquote{border-left:3px solid #d9d2c4;margin:0;padding-left:12px;color:#5f6758}.sticky-card{border:1px solid #e3ddd2;border-radius:6px;padding:10px;margin:8px 0}@page{margin:18mm}@media print{body{margin:0 auto}}`;
+A.exportPDF=function(n=note()){if(!n)return;const w=window.open('','_blank');if(!w)return toast('팝업이 막혔습니다. 브라우저에서 팝업을 허용해주세요.');const body=bodyHTML(n).innerHTML;
+  w.document.open();w.document.write(`<!doctype html><html lang="ko"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>${esc(fname(n))}</title><style>${pageCSS}</style></head><body><h1>${esc(n.title||'제목 없는 메모')}</h1><div class="meta">${esc(metaLine(n))}</div>${body}<script>window.onload=()=>setTimeout(()=>window.print(),300)<\/script></body></html>`);w.document.close();closeModal()};
+
+/* Word (.docx) */
+let docxLib=null;const loadDocx=()=>docxLib||(docxLib=new Promise((ok,no)=>{if(window.docx)return ok(window.docx);const s=document.createElement('script');s.src='https://cdn.jsdelivr.net/npm/docx@8.5.0/build/index.umd.js';s.onload=()=>ok(window.docx);s.onerror=()=>{docxLib=null;no(Error('Word 변환 도구를 불러오지 못했습니다. 인터넷 연결을 확인해주세요.'))};document.head.append(s)}));
+async function imgData(src){try{let bytes,type;if(src.startsWith('data:')){const m=src.match(/^data:image\/(png|jpe?g|gif|webp);base64,(.*)$/i);if(!m)return null;type=m[1].toLowerCase().replace('jpeg','jpg');const bin=atob(m[2]);bytes=new Uint8Array(bin.length);for(let i=0;i<bin.length;i++)bytes[i]=bin.charCodeAt(i)}else{const r=await fetch(src);if(!r.ok)return null;bytes=new Uint8Array(await r.arrayBuffer());type=(r.headers.get('content-type')||'').split('/')[1]||'png'}
+  const size=await new Promise(res=>{const im=new Image();im.onload=()=>res([im.naturalWidth,im.naturalHeight]);im.onerror=()=>res([400,300]);im.src=src});const scale=Math.min(1,600/size[0]);
+  if(type==='webp'||type==='gif'){/* Word 호환을 위해 PNG로 변환 */const c=document.createElement('canvas');c.width=size[0];c.height=size[1];const im=new Image();im.src=src;await im.decode().catch(()=>{});c.getContext('2d').drawImage(im,0,0);const b=await new Promise(r=>c.toBlob(r,'image/png'));if(!b)return null;bytes=new Uint8Array(await b.arrayBuffer());type='png'}
+  return {bytes,type:type==='jpg'?'jpg':'png',w:Math.round(size[0]*scale),h:Math.round(size[1]*scale)}}catch{return null}}
+A.exportDOCX=async function(n=note()){if(!n)return;closeModal();toast('Word 파일을 만드는 중…');try{const X=await loadDocx();const {Document,Packer,Paragraph,TextRun,HeadingLevel,ExternalHyperlink,ImageRun,Table,TableRow,TableCell,WidthType,AlignmentType,LevelFormat}=X;
+  const H=[HeadingLevel.HEADING_1,HeadingLevel.HEADING_2,HeadingLevel.HEADING_3,HeadingLevel.HEADING_4,HeadingLevel.HEADING_5,HeadingLevel.HEADING_6];
+  async function runs(node,s={}){const out=[];for(const c of node.childNodes){if(c.nodeType===3){const t=c.data.replace(/\u00a0/g,' ');if(t)out.push(new TextRun({text:t,...s}));continue}if(c.nodeType!==1)continue;const t=c.tagName;
+    if(t==='BR'){out.push(new TextRun({text:'',break:1,...s}));continue}
+    if(t==='B'||t==='STRONG'){out.push(...await runs(c,{...s,bold:true}));continue}if(t==='I'||t==='EM'){out.push(...await runs(c,{...s,italics:true}));continue}if(t==='U'){out.push(...await runs(c,{...s,underline:{}}));continue}if(t==='S'||t==='STRIKE'){out.push(...await runs(c,{...s,strike:true}));continue}if(t==='CODE'){out.push(new TextRun({text:c.textContent,font:'Consolas',...s}));continue}
+    if(t==='A'){const h=valid(c.getAttribute('href'));const kids=await runs(c,{...s,style:'Hyperlink'});out.push(h?new ExternalHyperlink({link:h,children:kids.length?kids:[new TextRun({text:h,style:'Hyperlink'})]}):kids);continue}
+    if(t==='IMG'){const d=await imgData(c.getAttribute('src')||'');if(d)out.push(new ImageRun({data:d.bytes,type:d.type,transformation:{width:d.w,height:d.h}}));continue}
+    out.push(...await runs(c,s))}return out.flat()}
+  const blocks=[];
+  async function walk(el,lv=0){for(const c of el.childNodes){if(c.nodeType===3){if(c.data.trim())blocks.push(new Paragraph({children:[new TextRun(c.data.trim())]}));continue}if(c.nodeType!==1)continue;const t=c.tagName;
+    if(/^H[1-6]$/.test(t)){blocks.push(new Paragraph({heading:H[Math.min(5,+t[1])],children:await runs(c)}));continue}
+    if(t==='UL'||t==='OL'){for(const li of c.children){if(li.tagName!=='LI')continue;const clone=li.cloneNode(true);clone.querySelectorAll(':scope>ul,:scope>ol').forEach(x=>x.remove());blocks.push(new Paragraph({children:await runs(clone),...(t==='OL'?{numbering:{reference:'memoa-num',level:Math.min(lv,8)}}:{bullet:{level:Math.min(lv,8)}})}));for(const sub of li.querySelectorAll(':scope>ul,:scope>ol'))await walk({childNodes:[sub]},lv+1)}continue}
+    if(t==='TABLE'){const rows=[];for(const tr of c.querySelectorAll('tr')){const cells=[];for(const td of tr.children){let inner;if([...td.children].some(x=>/^(P|DIV|H[1-6]|UL|OL|TABLE|BLOCKQUOTE|PRE)$/.test(x.tagName))){const tmp=blocks.length;await walk(td);inner=blocks.splice(tmp)}else inner=[new Paragraph({children:await runs(td)})];cells.push(new TableCell({children:inner.length?inner:[new Paragraph({children:await runs(td)})],shading:td.tagName==='TH'?{fill:'F6F2EA'}:undefined}))}if(cells.length)rows.push(new TableRow({children:cells}))}if(rows.length)blocks.push(new Table({rows,width:{size:100,type:WidthType.PERCENTAGE}}));continue}
+    if(t==='BLOCKQUOTE'){blocks.push(new Paragraph({indent:{left:480},children:await runs(c,{color:'5F6758'})}));continue}
+    if(t==='PRE'){for(const line of c.textContent.split('\n'))blocks.push(new Paragraph({children:[new TextRun({text:line,font:'Consolas'})]}));continue}
+    if(t==='HR'){blocks.push(new Paragraph({border:{bottom:{style:'single',size:6,color:'D9D2C4'}},children:[]}));continue}
+    if([...c.children].some(x=>/^(P|DIV|H[1-6]|UL|OL|TABLE|BLOCKQUOTE|PRE|SECTION|ARTICLE)$/.test(x.tagName))){await walk(c,lv);continue}
+    const r=await runs(c);blocks.push(new Paragraph({children:r}))}}
+  await walk(bodyHTML(n));
+  const doc=new Document({creator:'MEMOA',title:n.title||'메모',styles:{default:{document:{run:{font:'Malgun Gothic',size:22},paragraph:{spacing:{after:120,line:300}}}}},numbering:{config:[{reference:'memoa-num',levels:Array.from({length:9},(_,i)=>({level:i,format:LevelFormat.DECIMAL,text:`%${i+1}.`,alignment:AlignmentType.START,style:{paragraph:{indent:{left:720*(i+1),hanging:360}}}}))}]},
+    sections:[{children:[new Paragraph({heading:HeadingLevel.TITLE,children:[new TextRun({text:n.title||'제목 없는 메모'})]}),new Paragraph({children:[new TextRun({text:metaLine(n),color:'8A9083',size:18})]}),...blocks]}]});
+  download(await Packer.toBlob(doc),fname(n)+'.docx');toast('Word 파일로 내보냈습니다.')}catch(e){toast(e.message||'Word 파일을 만들지 못했습니다.')}};
+
+/* 내보내기 메뉴 */
+A.exportMenu=function(){const n=note();if(!n)return;modal(`<div class="eyebrow">EXPORT</div><h2>‘${esc(n.title||'제목 없는 메모')}’ 내보내기</h2><div class="export-grid"><button type="button" onclick="MEMOAApp.exportDOCX()"><b>Word</b><small>.docx · 한글·워드·구글 문서</small></button><button type="button" onclick="MEMOAApp.exportPDF()"><b>PDF</b><small>인쇄 창에서 'PDF로 저장'</small></button><button type="button" onclick="MEMOAApp.exportMD()"><b>Markdown</b><small>.md · 옵시디언·노션·깃허브</small></button><button type="button" onclick="closeModal();exportTxt()"><b>텍스트</b><small>.txt · 서식 없이</small></button></div><div class="row"><button type="button" onclick="closeModal()">닫기</button></div>`)};
+const txtBtn=document.querySelector('button[onclick="exportTxt()"]');if(txtBtn){txtBtn.textContent='내보내기 ↓';txtBtn.setAttribute('onclick','MEMOAApp.exportMenu()')}
+const qt=document.querySelector('.quick-tools');if(qt&&!qt.querySelector('[data-export]')){const b=document.createElement('button');b.type='button';b.dataset.export='1';b.textContent='내보내기';b.onclick=()=>A.exportMenu();qt.append(b)}
+})();
