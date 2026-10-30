@@ -62,7 +62,7 @@ const prevList=renderList;renderList=function(){
 function trashedGroups(){
   const groups=new Map();
   for(const [name,t] of Object.entries(db.folderTomb||{})){
-    if(t.rename||db.folders.includes(name))continue;
+    if(t.rename||t.purged||db.folders.includes(name))continue;
     const g=groups.get(t.group)||{group:t.group,top:t.top||name,at:t.at,names:[]};g.names.push(name);groups.set(t.group,g);
   }
   return [...groups.values()].sort((a,b)=>b.at-a.at);
@@ -283,15 +283,16 @@ const qn=$('quick-notes');if(qn){const mark=()=>qn.querySelectorAll('[data-quick
 
 /* 보낸 기록은 기기별(localStorage) — 메모를 건드리지 않아 기기 간 충돌 사본이 생기지 않음. 일정 ID가 고정이라 여러 기기가 보내도 중복되지 않음 */
 const SENT='memoa-cal-sent';const loadSent=()=>{try{return JSON.parse(localStorage.getItem(SENT)||'{}')||{}}catch{return {}}};const saveSent=s=>{try{localStorage.setItem(SENT,JSON.stringify(s))}catch{}};
-function rowsOf(n){const w=document.createElement('div');w.innerHTML=n.html||'';return [...w.querySelectorAll('.schedule-row')].map((r,i)=>{const time=(r.querySelector('input[type=time]')?.getAttribute('value')||'09:00').slice(0,5);const box=r.querySelector('.schedule-text');const d=document.createElement('div');d.innerHTML=(box?.innerHTML||'').replace(/<br\s*\/?>/gi,'\n').replace(/<\/(p|div|li)>/gi,'\n');const text=(d.textContent||'').replace(/\u00a0/g,' ').split('\n').map(s=>s.trim()).filter(Boolean);return {sid:r.dataset.sid||'i'+i,time,text}})}
+function rowsOf(n){const w=document.createElement('div');w.innerHTML=n.html||'';return [...w.querySelectorAll('.schedule-row')].map((r,i)=>{const time=(r.querySelector('input[type=time]')?.getAttribute('value')||'09:00').slice(0,5);const box=r.querySelector('.schedule-text');const d=document.createElement('div');d.innerHTML=(box?.innerHTML||'').replace(/<br\s*\/?>/gi,'\n').replace(/<\/(p|div|li)>/gi,'\n');const text=(d.textContent||'').replace(/\u00a0/g,' ').split('\n').map(s=>s.trim()).filter(Boolean);const end=(r.querySelector('input[data-end]')?.getAttribute('value')||'').slice(0,5);return {sid:r.dataset.sid||'i'+i,time,end:/^\d{2}:\d{2}$/.test(end)?end:'',text}})}
 const pad=x=>String(x).padStart(2,'0');
+function endAt(date,time,end){if(!end||end===time)return endOf(date,time);if(end>time)return `${date}T${end}:00`;const d=new Date(date+'T00:00:00');d.setDate(d.getDate()+1);return `${d.toLocaleDateString('en-CA')}T${end}:00`}
 function endOf(date,time){const [h,m]=time.split(':').map(Number);const d=new Date(date+'T00:00:00');d.setHours(h+1,m||0);return `${d.toLocaleDateString('en-CA')}T${pad(d.getHours())}:${pad(d.getMinutes())}:00`}
 const eventId=(n,sid)=>'memoa'+C.hash(n.id)+C.hash(String(sid));
-function desired(n){if(n.deleted||n._conflictOf||n.template!=='scheduler'||!/^\d{4}-\d{2}-\d{2}$/.test(n.schedulerDate||''))return new Map();const out=new Map();for(const r of rowsOf(n)){if(!r.text.length||/^(일정 내용|첫 번째 일정)$/.test(r.text.join(' ')))continue;const body={summary:r.text[0].slice(0,250),description:[...r.text.slice(1),'',`MEMOA · ${n.title||'스케줄러'}`].join('\n').trim(),start:{dateTime:`${n.schedulerDate}T${r.time}:00`,timeZone:TZ},end:{dateTime:endOf(n.schedulerDate,r.time),timeZone:TZ},status:'confirmed',extendedProperties:{private:{memoa:'1',note:n.id}}};out.set(r.sid,{body,hash:C.hash(JSON.stringify(body))})}return out}
+function desired(n){if(n.deleted||n._conflictOf||n.template!=='scheduler'||!/^\d{4}-\d{2}-\d{2}$/.test(n.schedulerDate||''))return new Map();const out=new Map();for(const r of rowsOf(n)){if(!r.text.length||/^(일정 내용|첫 번째 일정)$/.test(r.text.join(' ')))continue;const body={summary:r.text[0].slice(0,250),description:[...r.text.slice(1),'',`MEMOA · ${n.title||'스케줄러'}`].join('\n').trim(),start:{dateTime:`${n.schedulerDate}T${r.time}:00`,timeZone:TZ},end:{dateTime:endAt(n.schedulerDate,r.time,r.end),timeZone:TZ},status:'confirmed',extendedProperties:{private:{memoa:'1',note:n.id}}};out.set(r.sid,{body,hash:C.hash(JSON.stringify(body))})}return out}
 async function call(method,url,body){const r=await fetch(url,{method,headers:{Authorization:'Bearer '+A.drive.token,'Content-Type':'application/json'},body:body?JSON.stringify(body):undefined});if(r.status===401){A.drive.token=null;A.lostConnection?.();throw Error('Google 연결이 만료되었습니다.')}if(r.status===403){const t=await r.text();throw Error(/accessNotConfigured|has not been used|disabled/i.test(t)?'Google Cloud에서 Calendar API를 사용 설정해주세요.':'캘린더 권한이 없습니다. 설정에서 캘린더 연결을 다시 해주세요.')}return r}
 async function upsert(id,body){let r=await call('PATCH',`${API}/${id}`,body);if(r.status===404){r=await call('POST',API,{...body,id});if(r.status===409)r=await call('PUT',`${API}/${id}`,body)}if(!r.ok)throw Error('캘린더 반영 실패 ('+r.status+')')}
 async function remove(id){const r=await call('DELETE',`${API}/${id}`);if(!r.ok&&![404,410].includes(r.status))throw Error('캘린더 일정 삭제 실패 ('+r.status+')')}
-function pendingCount(){let c=0;const all=loadSent();for(const n of db.notes){const want=desired(n),sent=all[n.id]||{};for(const [sid,w] of want)if(sent[sid]!==w.hash)c++;for(const sid of Object.keys(sent))if(!want.has(sid))c++}return c}
+function pendingCount(){let c=0;const all=loadSent();for(const id of Object.keys(all))if(!db.notes.some(x=>x.id===id))c++;for(const n of db.notes){const want=desired(n),sent=all[n.id]||{};for(const [sid,w] of want)if(sent[sid]!==w.hash)c++;for(const sid of Object.keys(sent))if(!want.has(sid))c++}return c}
 A.calendarPush=async function(force){
   if(!on()||busy)return;if(!canPush()){setState(pendingCount()?'캘린더 대기 · Google 연결 필요':'');return}
   busy=true;let done=0;const all=loadSent();
@@ -303,6 +304,7 @@ A.calendarPush=async function(force){
       for(const sid of Object.keys(sent))if(!want.has(sid)){await remove(eventId(n,sid));delete sent[sid];touched=true;done++}
       if(touched){if(Object.keys(sent).length)all[n.id]=sent;else delete all[n.id];saveSent(all)}
     }
+    for(const id of Object.keys(all)){if(db.notes.some(x=>x.id===id))continue;for(const sid of Object.keys(all[id]||{})){await remove('memoa'+C.hash(id)+C.hash(String(sid)));done++}delete all[id];saveSent(all)}
     setState(done?`캘린더 반영 ✓ (${done}건)`:'캘린더 최신 ✓');
   }catch(e){setState(e.message,true)}finally{busy=false}
 };
@@ -511,10 +513,12 @@ function toMD(root){
     const s=inline(c).trim();if(s)out.push(s,'')}};
   block(root);return out.join('\n').replace(/\n{3,}/g,'\n\n').trim()}
 const yaml=v=>JSON.stringify(String(v??''));
-A.exportMD=function(n=note()){if(!n)return;const front=['---',`title: ${yaml(n.title||'제목 없는 메모')}`,`created: ${new Date(n.created||Date.now()).toISOString()}`,`modified: ${new Date(n.modified||Date.now()).toISOString()}`,`folder: ${yaml(n.folder)}`,`type: ${yaml(n.type||'note')}`,`format: ${yaml(n.template||'free')}`,`tags: [${(n.tags||[]).map(yaml).join(', ')}]`];
+A.noteToMD=function(n){const front=['---',`id: ${yaml(n.id)}`,`source: "memoa"`,`title: ${yaml(n.title||'제목 없는 메모')}`,`created: ${new Date(n.created||Date.now()).toISOString()}`,`modified: ${new Date(n.modified||Date.now()).toISOString()}`,`folder: ${yaml(n.folder)}`,`type: ${yaml(n.type||'note')}`,`format: ${yaml(n.template||'free')}`,`tags: [${(n.tags||[]).map(yaml).join(', ')}]`];
   if(n.book)for(const [k,v] of Object.entries(n.book))if(v)front.push(`book_${k}: ${yaml(v)}`);if(n.schedulerDate&&n.template==='scheduler')front.push(`date: ${yaml(n.schedulerDate)}`);
-  const links=(n.links||[]).map(id=>db.notes.find(x=>x.id===id)).filter(Boolean).map(x=>x.title||'제목 없는 메모');if(links.length)front.push(`linked: [${links.map(yaml).join(', ')}]`);front.push('---','');
-  const md=front.join('\n')+'# '+(n.title||'제목 없는 메모')+'\n\n'+toMD(bodyHTML(n))+'\n';
+  const links=(n.links||[]).map(id=>db.notes.find(x=>x.id===id)).filter(Boolean).map(x=>x.title||'제목 없는 메모');if(links.length)front.push(`linked: [${links.map(yaml).join(', ')}]`);const wt=(n.tags||[]).filter(x=>/^왓슨(\/|$)/.test(x));if(wt.length){front.push('watson: true');const projects=[...new Set(wt.map(x=>x.split('/').slice(1).join('/').trim()).filter(Boolean))];if(projects.length)front.push(`project: ${projects.length===1?yaml(projects[0]):'['+projects.map(yaml).join(', ')+']'}`)}front.push('---','');
+  return front.join('\n')+'# '+(n.title||'제목 없는 메모')+'\n\n'+toMD(bodyHTML(n))+'\n'};
+A.fileName=fname;A.download=download;
+A.exportMD=function(n=note()){if(!n)return;const md=A.noteToMD(n);
   download(new Blob([md],{type:'text/markdown;charset=utf-8'}),fname(n)+'.md');closeModal();toast('Markdown으로 내보냈습니다.')};
 
 /* PDF: 깔끔한 인쇄용 페이지 → 'PDF로 저장' */
@@ -555,4 +559,271 @@ A.exportDOCX=async function(n=note()){if(!n)return;closeModal();toast('Word 파�
 A.exportMenu=function(){const n=note();if(!n)return;modal(`<div class="eyebrow">EXPORT</div><h2>‘${esc(n.title||'제목 없는 메모')}’ 내보내기</h2><div class="export-grid"><button type="button" onclick="MEMOAApp.exportDOCX()"><b>Word</b><small>.docx · 한글·워드·구글 문서</small></button><button type="button" onclick="MEMOAApp.exportPDF()"><b>PDF</b><small>인쇄 창에서 'PDF로 저장'</small></button><button type="button" onclick="MEMOAApp.exportMD()"><b>Markdown</b><small>.md · 옵시디언·노션·깃허브</small></button><button type="button" onclick="closeModal();exportTxt()"><b>텍스트</b><small>.txt · 서식 없이</small></button></div><div class="row"><button type="button" onclick="closeModal()">닫기</button></div>`)};
 const txtBtn=document.querySelector('button[onclick="exportTxt()"]');if(txtBtn){txtBtn.textContent='내보내기 ↓';txtBtn.setAttribute('onclick','MEMOAApp.exportMenu()')}
 const qt=document.querySelector('.quick-tools');if(qt&&!qt.querySelector('[data-export]')){const b=document.createElement('button');b.type='button';b.dataset.export='1';b.textContent='내보내기';b.onclick=()=>A.exportMenu();qt.append(b)}
+})();
+
+/* ===== 8차 (2026-10-30): 영구 삭제·휴지통 비우기, 빈 메모 정리, 메모 카드 메뉴(휴대폰 길게 누르기 / PC 오른쪽 클릭), 스케줄러 종료 시간, 폴더 ZIP 내보내기 ===== */
+(function(){'use strict';
+const A=window.MEMOAApp;
+const st=document.createElement('style');st.textContent=`
+#empty-trash{margin-left:8px;font-size:12px;color:#b5533c;border:1px solid #e5c3b8;border-radius:999px;padding:2px 10px;background:#fff}
+#purge-note{color:#b5533c}
+.card-menu .folder-pick{display:flex;flex-direction:column;gap:4px;max-height:45vh;overflow:auto;margin:8px 0}
+.card-menu .folder-pick button{text-align:left;padding:9px 10px;border:1px solid #e9e3d8;border-radius:8px;background:#fffefa}
+.card-menu .folder-pick button.here{opacity:.45}
+.card-menu .row{flex-wrap:wrap}
+@media (pointer:coarse){.quick-note,#notes .note{-webkit-touch-callout:none;-webkit-user-select:none;user-select:none}}
+.schedule-row .end-sep{color:#8a9083;margin:0 2px}
+.schedule-row input[data-end]{min-width:0}`;document.head.append(st);
+const C=window.MEMOACore;
+A.refreshQuick=()=>{const s=$('quick-search'),l=$('quick-list');if(s&&l&&!l.hidden)s.dispatchEvent(new Event('input'))};
+const afterChange=()=>{try{setView(view)}catch{renderList();renderEditor()}try{A.refreshQuick()}catch{}};
+
+/* ---------- 영구 삭제 ---------- */
+A.purgeNotes=function(ids,{quiet}={}){ids=[...new Set(ids)].filter(id=>db.notes.some(n=>n.id===id));if(!ids.length)return 0;const now=Date.now();db.noteTomb ||= {};
+  for(const id of ids)db.noteTomb[id]=now;
+  const gone=new Set(ids);db.notes=db.notes.filter(n=>!gone.has(n.id)&&!(n._conflictOf&&gone.has(n._conflictOf)));
+  for(const n of db.notes)if(Array.isArray(n.links)&&n.links.some(x=>gone.has(x)))n.links=n.links.filter(x=>!gone.has(x));
+  if(gone.has(current))current=(db.notes.find(n=>!n.deleted)||{}).id;
+  persist();if(db.calendarSync?.on)setTimeout(()=>A.calendarPush?.(),500);if(!quiet)afterChange();return ids.length};
+A.emptyTrash=function(){const trashed=db.notes.filter(n=>n.deleted);const groups=Object.entries(db.folderTomb||{}).filter(([,t])=>!t.rename&&!t.purged);const fcount=new Set(groups.map(([,t])=>t.group)).size;
+  if(!trashed.length&&!fcount)return toast('휴지통이 비어 있습니다.');
+  modal(`<div class="eyebrow">EMPTY TRASH</div><h2>휴지통을 비울까요?</h2><p>메모 ${trashed.length}개${fcount?`와 폴더 ${fcount}개`:''}가 <b>영구 삭제</b>됩니다. 모든 기기에서 사라지고 되돌릴 수 없습니다.</p><p><small>남겨야 할 메모가 있다면 먼저 전체 백업을 받아두세요.</small></p><div class="row"><button type="button" onclick="closeModal()">취소</button><button type="button" class="primary btn-danger" id="confirm-empty">영구 삭제</button></div>`);
+  $('confirm-empty').onclick=()=>{for(const [,t] of groups)t.purged=true;const n=A.purgeNotes(trashed.map(x=>x.id),{quiet:true});if(!n)persist();closeModal();afterChange();toast('휴지통을 비웠습니다.')}};
+A.purgeCurrent=function(){const n=note();if(!n||!n.deleted)return;modal(`<div class="eyebrow">DELETE FOREVER</div><h2>‘${esc(n.title||'제목 없는 메모')}’를 영구 삭제할까요?</h2><p>모든 기기에서 사라지고 되돌릴 수 없습니다.</p><div class="row"><button type="button" onclick="closeModal()">취소</button><button type="button" class="primary btn-danger" id="confirm-purge">영구 삭제</button></div>`);$('confirm-purge').onclick=()=>{A.purgeNotes([n.id]);closeModal();toast('영구 삭제했습니다.')}};
+// 휴지통 화면: '휴지통 비우기' / 휴지통 메모: '영구 삭제'
+const prevRL=renderList;renderList=function(){prevRL.apply(this,arguments);let b=$('empty-trash');if(view==='trash'){if(!b){b=document.createElement('button');b.id='empty-trash';b.type='button';b.textContent='휴지통 비우기';b.onclick=()=>A.emptyTrash();$('count')?.after(b)}}else b?.remove()};
+const prevRE=renderEditor;renderEditor=function(){prevRE.apply(this,arguments);const n=note(),del=$('del');let p=$('purge-note');if(n?.deleted&&del){if(!p){p=document.createElement('button');p.id='purge-note';p.type='button';p.textContent='영구 삭제';p.onclick=()=>A.purgeCurrent();del.after(p)}}else p?.remove();ensureEnd()};
+
+/* ---------- 빈 메모 정리: 새로 만들고 아무것도 안 쓴 채 떠나면 지움 ---------- */
+const fresh=new Set();let last=null;
+const isEmpty=n=>n&&!n.deleted&&(!n.template||n.template==='free')&&!(n.title||'').trim()&&!textOf(n.html||'').replace(/ /g,' ').trim()&&!/<(img|a)\b/i.test(n.html||'')&&!(n.links||[]).length&&!n.url;
+function sweep(except){for(const id of [...fresh]){if(id===except)continue;const n=db.notes.find(x=>x.id===id);fresh.delete(id);if(isEmpty(n))A.purgeNotes([id],{quiet:true})}}
+const prevNew=newNote;newNote=function(){const before=current;const r=prevNew.apply(this,arguments);if(current&&current!==before)fresh.add(current);return r};
+const prevRE2=renderEditor;renderEditor=function(){if(last&&last!==current&&fresh.has(last))sweep(current);last=current;return prevRE2.apply(this,arguments)};
+const back=$('quick-back');if(back)back.addEventListener('click',()=>{const id=current;if(fresh.has(id)){const n=db.notes.find(x=>x.id===id);if(n&&n.autoTitle===true)n.html=$('quick-body')?.innerHTML??n.html;if(isEmpty(n)){fresh.delete(id);A.purgeNotes([id],{quiet:true})}}},true);
+
+/* ---------- 메모 카드 메뉴: 폴더 이동 · 휴지통 (휴대폰 길게 누르기, PC 오른쪽 클릭) ---------- */
+const pathOf=f=>typeof folderPath==='function'?folderPath(f):f;
+A.cardMenu=function(id){const n=db.notes.find(x=>x.id===id);if(!n)return;
+  modal(`<div class="card-menu"><div class="eyebrow">MOVE</div><h2>${esc(n.title||(textOf(n.html||'').trim().slice(0,30))||'제목 없는 메모')}</h2><div class="label">폴더로 이동</div><div class="folder-pick">${db.folders.map(f=>`<button type="button" data-to="${esc(f)}" class="${f===n.folder&&!n.deleted?'here':''}">▱ ${esc(pathOf(f))}${f===n.folder&&!n.deleted?' · 현재':''}</button>`).join('')}</div><div class="row"><button type="button" onclick="closeModal()">닫기</button>${n.deleted?'':'<button type="button" id="card-trash" style="color:#b5533c">휴지통으로</button>'}</div></div>`);
+  $('dialog').querySelectorAll('[data-to]').forEach(b=>b.onclick=()=>{const f=b.dataset.to;const was=n.deleted;n.folder=f;if(was){n.deleted=false;delete n.trashedWithFolder}persist();closeModal();afterChange();toast(`${was?'복원해서 ':''}‘${pathOf(f)}’(으)로 옮겼습니다.`)});
+  const tb=$('card-trash');if(tb)tb.onclick=()=>{n.deleted=true;persist();closeModal();afterChange();toast('휴지통으로 옮겼습니다.')}};
+let suppress=0;
+function attach(container,sel,key){if(!container)return;let timer=null,sx=0,sy=0;
+  container.addEventListener('touchstart',e=>{const el=e.target.closest?.(sel);if(!el||e.touches.length>1)return;sx=e.touches[0].clientX;sy=e.touches[0].clientY;clearTimeout(timer);timer=setTimeout(()=>{timer=null;suppress=Date.now()+800;navigator.vibrate?.(15);A.cardMenu(el.dataset[key])},550)},{passive:true});
+  container.addEventListener('touchmove',e=>{if(timer&&(Math.abs(e.touches[0].clientX-sx)>10||Math.abs(e.touches[0].clientY-sy)>10)){clearTimeout(timer);timer=null}},{passive:true});
+  container.addEventListener('touchend',()=>{clearTimeout(timer);timer=null});
+  container.addEventListener('contextmenu',e=>{const el=e.target.closest?.(sel);if(!el)return;e.preventDefault();if(Date.now()<suppress)return;A.cardMenu(el.dataset[key])});
+  container.addEventListener('click',e=>{if(Date.now()<suppress&&e.target.closest?.(sel)){e.preventDefault();e.stopImmediatePropagation()}},true)}
+attach($('quick-notes'),'[data-quick-note]','quickNote');
+attach($('notes'),'.note[data-id]','id');
+
+/* ---------- 스케줄러 종료 시간(선택, 비우면 1시간) ---------- */
+function ensureEnd(){const n=note();if(!n||n.template!=='scheduler')return;$('editor').querySelectorAll('.schedule-row').forEach(r=>{if(r.querySelector('input[data-end]'))return;const start=r.querySelector('input[type=time]');if(!start)return;start.insertAdjacentHTML('afterend','<span class="end-sep" contenteditable="false">~</span><input contenteditable="false" type="time" data-end value="" aria-label="종료 시간(비우면 1시간)" title="종료 시간 · 비우면 1시간">')})}
+const prevAdd=window.MEMOADoc?.addBlock;if(prevAdd)window.MEMOADoc.addBlock=function(kind){const r=prevAdd.apply(this,arguments);if(kind==='schedule')ensureEnd();return r};
+const prevLinear=window.MEMOADoc?.linear;if(prevLinear)window.MEMOADoc.linear=function(n){let out=prevLinear.apply(this,arguments);if(n?.template!=='scheduler')return out;const w=document.createElement('div');w.innerHTML=n.html||'';const ends=[...w.querySelectorAll('.schedule-row')].map(r=>r.querySelector('input[data-end]')?.getAttribute('value')||'');let i=0;return out.replace(/<p><strong>(\d{2}:\d{2})<\/strong><\/p>/g,(m,t)=>{const e=ends[i++];return e?`<p><strong>${t} ~ ${e}</strong></p>`:m})};
+
+/* ---------- 폴더 내보내기: Markdown ZIP ---------- */
+let zipLib=null;const loadZip=()=>zipLib||(zipLib=new Promise((ok,no)=>{if(window.JSZip)return ok(window.JSZip);const s=document.createElement('script');s.src='https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js';s.onload=()=>ok(window.JSZip);s.onerror=()=>{zipLib=null;no(Error('압축 도구를 불러오지 못했습니다. 인터넷 연결을 확인해주세요.'))};document.head.append(s)}));
+const safe=s=>String(s||'').replace(/[\\/:*?"<>|]/g,'_').trim().slice(0,80)||'메모';
+A.exportFolderZip=async function(f){const all=[f,...(typeof descendants==='function'?descendants(f):[])];const notes=db.notes.filter(n=>!n.deleted&&all.includes(n.folder));if(!notes.length)return toast('내보낼 메모가 없습니다.');closeModal();toast(`메모 ${notes.length}개를 묶는 중…`);
+  try{const Z=await loadZip(),zip=new Z(),used=new Set();
+    for(const n of notes){const dir=pathOf(n.folder).split(/\s*[\/›>]\s*/).map(safe).join('/');let name=`${dir}/${safe(n.title||textOf(n.html||'').trim().slice(0,30))}`,k=2;while(used.has(name+'.md'))name=name.replace(/ \(\d+\)$/,'')+` (${k++})`;used.add(name+'.md');zip.file(name+'.md',A.noteToMD(n))}
+    const blob=await zip.generateAsync({type:'blob'});A.download(blob,`MEMOA-${safe(f)}-${new Date().toISOString().slice(0,10)}.zip`);toast(`메모 ${notes.length}개를 ZIP으로 내보냈습니다.`)}catch(e){toast(e.message||'ZIP을 만들지 못했습니다.')}};
+if(typeof folderDialog==='function'){const prevFD=folderDialog;folderDialog=function(edit='',parent=''){prevFD(edit,parent);if(!edit)return;const row=$('dialog').querySelector('.row');if(!row)return;const b=document.createElement('button');b.type='button';b.textContent='Markdown ZIP';b.title='이 폴더(하위 폴더 포함)의 메모를 Markdown 파일로 묶어 내보내기';b.onclick=()=>A.exportFolderZip(edit);row.querySelector('button')?.after(b)}}
+const prevEM=A.exportMenu;A.exportMenu=function(){prevEM.apply(this,arguments);const n=note(),grid=$('dialog').querySelector('.export-grid');if(!n||!grid)return;grid.insertAdjacentHTML('beforeend',`<button type="button" id="export-folder"><b>폴더 전체</b><small>‘${esc(pathOf(n.folder))}’ · Markdown ZIP</small></button>`);$('export-folder').onclick=()=>A.exportFolderZip(n.folder)};
+
+afterChange();
+})();
+
+/* ===== 9차 (2026-10-30): 사진 자동 축소 + 이력에 사진 복사 안 함 ===== */
+(function(){'use strict';
+const A=window.MEMOAApp,C=window.MEMOACore,D=window.MEMOADoc;
+const MAX_EDGE=1600,QUALITY=0.8,KEEP_BELOW=400*1024,RAW_LIMIT=25*1024*1024;
+const readURL=blob=>new Promise((ok,no)=>{const r=new FileReader();r.onload=()=>ok(r.result);r.onerror=no;r.readAsDataURL(blob)});
+async function decode(blob){if(window.createImageBitmap){try{return await createImageBitmap(blob,{imageOrientation:'from-image'})}catch{try{return await createImageBitmap(blob)}catch{}}}const url=URL.createObjectURL(blob);try{const im=new Image();im.src=url;await im.decode();return im}finally{setTimeout(()=>URL.revokeObjectURL(url),1000)}}
+/* 붙여넣거나 고른 사진 → 긴 변 1600px, WebP 80%(안 되면 JPEG). 이미 작으면 그대로 */
+A.shrinkImage=async function(blob){const original=await readURL(blob);
+  if(blob.type==='image/gif'&&blob.size<=1.5*1024*1024)return original;
+  let img;try{img=await decode(blob)}catch{return original}
+  const w=img.width||img.naturalWidth,h=img.height||img.naturalHeight;if(!w||!h)return original;
+  const scale=Math.min(1,MAX_EDGE/Math.max(w,h));
+  if(scale===1&&blob.size<=KEEP_BELOW&&blob.type!=='image/gif')return original;
+  const c=document.createElement('canvas');c.width=Math.round(w*scale);c.height=Math.round(h*scale);const g=c.getContext('2d');
+  g.imageSmoothingQuality='high';g.drawImage(img,0,0,c.width,c.height);img.close?.();
+  let out=c.toDataURL('image/webp',QUALITY);
+  if(!out.startsWith('data:image/webp')){const c2=document.createElement('canvas');c2.width=c.width;c2.height=c.height;const g2=c2.getContext('2d');g2.fillStyle='#fff';g2.fillRect(0,0,c2.width,c2.height);g2.drawImage(c,0,0);out=c2.toDataURL('image/jpeg',0.82)}
+  return out.length<original.length?out:original};
+const okType=f=>/^image\/(png|jpe?g|webp|gif)$/i.test(f?.type||'');
+/* PC 편집기: 붙여넣기·끌어놓기·이미지 버튼 */
+imageUpload=async function(files){let n=0;for(const f of [...(files||[])]){if(!f||!f.type?.startsWith('image/'))continue;if(!okType(f)){toast('PNG·JPEG·WebP·GIF 이미지를 사용해주세요.');continue}if(f.size>RAW_LIMIT){toast('25MB 이하 이미지를 사용해주세요.');continue}
+  try{const url=await A.shrinkImage(f);fmt('insertHTML',`<p><img alt="${esc(f.name||'붙여넣은 이미지')}" src="${url}"></p>`);n++}catch{toast('이미지를 넣지 못했습니다.')}}
+  const inp=$('image');if(inp)inp.value='';return n};
+/* 휴대폰 기록 화면 */
+if(typeof A.quickImages==='function')A.quickImages=async function(files){for(const f of files){if(!okType(f)||f.size>RAW_LIMIT){toast('PNG·JPEG·WebP·GIF 이미지 25MB 이하를 사용해주세요.');continue}const id=current;let url;try{url=await A.shrinkImage(f)}catch{continue}const n=db.notes.find(x=>x.id===id);if(n){n.html=D.appendHTML(n,`<p><img src="${url}" alt="${esc(f.name||'사진')}"></p>`);persist();if(current===id){try{A.refreshQuick?.()}catch{}const qb=$('quick-body');if(qb&&!qb.hidden)qb.innerHTML=n.html}}}};
+
+/* 이력: 사진은 메모의 사진 보관함(n.imgs)에 한 번만, 이력 본문에는 표시(data-memoa-img)만 */
+const SRC=/src="(data:image\/[a-z]+;base64,[A-Za-z0-9+/=]+)"/g;
+const keyOf=uri=>C.hash(uri)+uri.length.toString(36);
+function slim(n){if(!Array.isArray(n.history)||!n.history.length){if(n.imgs){delete n.imgs;return true}return false}let changed=false;const store=n.imgs?{...n.imgs}:{};const used=new Set();
+  for(const h of n.history){if(typeof h.html!=='string')continue;if(h.html.includes('data:image/')){h.html=h.html.replace(SRC,(m,uri)=>{const k=keyOf(uri);store[k]=uri;used.add(k);changed=true;return `data-memoa-img="${k}"`})}
+    for(const m of h.html.matchAll(/data-memoa-img="([a-z0-9]+)"/g))used.add(m[1])}
+  for(const k of Object.keys(store))if(!used.has(k)){delete store[k];changed=true}
+  if(Object.keys(store).length)n.imgs=store;else if(n.imgs){delete n.imgs;changed=true}
+  return changed}
+function fat(html,n){return String(html||'').replace(/data-memoa-img="([a-z0-9]+)"/g,(m,k)=>n?.imgs?.[k]?`src="${n.imgs[k]}"`:m)}
+A.slimAll=()=>{let c=0;for(const n of db.notes)if(slim(n))c++;return c};
+const prevPersist=persist;persist=function(){const r=prevPersist.apply(this,arguments);const cur=note();for(const n of db.notes)if(n===cur||(Array.isArray(n.history)&&n.history.some(h=>typeof h?.html==='string'&&h.html.includes('data:image/'))))slim(n);return r};
+// 이력 보기·복원은 사진을 되살린 사본으로
+const prevHistory=A.history;if(prevHistory)A.history=function(){const r=prevHistory.apply(this,arguments);const n=db.notes.find(x=>x.id===A.historyNote);if(n&&Array.isArray(A.historyEntries))A.historyEntries=A.historyEntries.map(h=>h&&typeof h.html==='string'&&h.html.includes('data-memoa-img')?{...h,html:fat(h.html,n)}:h);return r};
+// 처음 한 번: 이미 쌓인 이력의 사진 정리
+Promise.resolve().then(()=>A.ready).then(()=>{if(A.slimAll())prevPersist()}).catch(()=>{});
+})();
+
+/* ===== 10차 (2026-10-30): 화면 정리(드롭다운 2단까지), 형광펜·표·구분선 ===== */
+(function(){'use strict';
+const A=window.MEMOAApp,D=window.MEMOADoc;
+const st=document.createElement('style');st.textContent=`
+/* 공용 드롭다운 */
+.mm-menu{position:fixed;z-index:10000;min-width:180px;max-width:280px;padding:5px;border:1px solid var(--line,#ddd);border-radius:10px;background:var(--paper,#fff);color:var(--fg,#272b26);box-shadow:0 8px 28px rgba(0,0,0,.14);font-size:13px}
+.mm-item{display:flex;align-items:center;gap:8px;width:100%;padding:7px 10px;border:0;border-radius:7px;background:none;color:inherit;font:inherit;text-align:left;cursor:pointer}
+.mm-item:hover,.mm-item.open{background:var(--hover,#e1ead9)}
+.mm-item[disabled]{opacity:.4;cursor:default;background:none}
+.mm-item .mm-check{width:14px;flex:none;text-align:center;color:#5f6758}
+.mm-item .mm-label{flex:1}
+.mm-item .mm-sub{color:#8a9083}
+.mm-sep{height:1px;margin:4px 6px;background:var(--line,#e5e5e5)}
+.mm-btn{display:inline-flex;align-items:center;gap:4px;border:1px solid var(--line,#ddd);border-radius:8px;background:var(--paper,#fff);color:inherit;padding:5px 10px;font-size:13px;cursor:pointer}
+.mm-btn:hover{background:var(--hover,#e1ead9)}
+/* 폴더창 */
+.sidebrand,.folderlabel>div,#foldersort,.sidebottom .sub{display:none!important}
+.ws-label{display:flex!important;align-items:center;justify-content:space-between}
+.ws-label .panel-close{margin:0}
+.folderlabel{display:flex!important;align-items:center;justify-content:space-between}
+.folder-menu-btn{border:0;background:none;color:inherit;font-size:16px;line-height:1;padding:2px 6px;border-radius:6px;cursor:pointer}
+.folder-menu-btn:hover{background:var(--hover,#e1ead9)}
+/* 목록창 */
+.createbar,.template-new,.typefilters,.list-display,#sort{display:none!important}
+.new-row{display:flex;gap:0;margin:0 0 12px}
+.new-row .new-main{flex:1;border-radius:9px 0 0 9px;padding:10px;font-weight:600}
+.new-row .new-more{border-radius:0 9px 9px 0;border-left:1px solid rgba(255,255,255,.35);padding:10px 12px}
+.new-row button{border:0;background:#748b68;color:#fff;cursor:pointer;font-size:14px}
+.new-row button:hover{filter:brightness(1.07)}
+.sortrow{display:flex!important;align-items:center;gap:8px;flex-wrap:wrap}
+.sortrow #count{flex:1}
+.filter-chip{display:inline-flex;align-items:center;gap:4px;border-radius:999px;padding:2px 4px 2px 10px;background:var(--hover,#e1ead9);font-size:12px}
+.filter-chip button{border:0;background:none;cursor:pointer;color:inherit;padding:0 4px}
+@media (hover:hover){#notes .note .compare-this{opacity:0;transition:opacity .15s}#notes .note:hover .compare-this{opacity:1}}
+/* 편집기: 형광펜·표·구분선 */
+#editor table.memo-table{border-collapse:collapse;width:100%;margin:10px 0}
+#editor table.memo-table td,#editor table.memo-table th{border:1px solid #d9d2c4;padding:6px 8px;vertical-align:top;min-width:40px}
+#editor hr{border:0;border-top:1px solid #d9d2c4;margin:18px 0}
+.tb-dd{border:0;background:none;cursor:pointer;padding:4px 6px;border-radius:6px;color:inherit;font:inherit}
+.tb-dd:hover{background:var(--hover,#e1ead9)}`;document.head.append(st);
+
+/* ---------- 드롭다운 (2단까지) ---------- */
+let openMenus=[];
+function closeMenus(depth=0){while(openMenus.length>depth)openMenus.pop().remove()}
+function place(el,rect,side){const w=el.offsetWidth,h=el.offsetHeight,vw=innerWidth,vh=innerHeight;let x,y;
+  if(side==='right'){x=rect.right+4;y=rect.top-5;if(x+w>vw-8)x=rect.left-w-4}else{x=rect.left;y=rect.bottom+4;if(x+w>vw-8)x=vw-w-8}
+  if(y+h>vh-8)y=Math.max(8,vh-h-8);el.style.left=Math.max(8,x)+'px';el.style.top=y+'px'}
+function menu(items,rect,depth=0,side='below'){closeMenus(depth);const m=document.createElement('div');m.className='mm-menu';m.setAttribute('role','menu');
+  for(const it of items){if(it==='-'){m.insertAdjacentHTML('beforeend','<div class="mm-sep"></div>');continue}
+    const b=document.createElement('button');b.type='button';b.className='mm-item';b.setAttribute('role','menuitem');if(it.disabled)b.disabled=true;
+    b.innerHTML=`<span class="mm-check">${it.checked?'✓':''}</span><span class="mm-label">${esc(it.label)}</span>${it.items?'<span class="mm-sub">›</span>':''}`;
+    b.addEventListener('mousedown',e=>e.preventDefault());
+    if(it.items){const open=()=>{if(b.classList.contains('open'))return;m.querySelectorAll('.mm-item.open').forEach(x=>x.classList.remove('open'));b.classList.add('open');menu(typeof it.items==='function'?it.items():it.items,b.getBoundingClientRect(),depth+1,'right')};b.onclick=open;b.onmouseenter=()=>{if(matchMedia('(hover:hover)').matches)open()}}
+    else{b.onmouseenter=()=>{if(matchMedia('(hover:hover)').matches){closeMenus(depth+1);m.querySelectorAll('.mm-item.open').forEach(x=>x.classList.remove('open'))}};b.onclick=()=>{closeMenus();it.onClick?.()}}
+    m.append(b)}
+  document.body.append(m);place(m,rect,side);openMenus.push(m);return m}
+A.menuAt=(anchor,items)=>{if(openMenus.length&&openMenus[0]._anchor===anchor){closeMenus();return}const m=menu(items,anchor.getBoundingClientRect());m._anchor=anchor};
+document.addEventListener('mousedown',e=>{if(openMenus.length&&!e.target.closest('.mm-menu')&&!openMenus.some(m=>m._anchor&&m._anchor.contains(e.target)))closeMenus()},true);
+document.addEventListener('keydown',e=>{if(e.key==='Escape'&&openMenus.length)closeMenus()});
+addEventListener('resize',()=>closeMenus());document.addEventListener('scroll',e=>{if(!e.target.closest?.('.mm-menu'))closeMenus()},true);
+const mmBtn=(label,cls='mm-btn')=>{const b=document.createElement('button');b.type='button';b.className=cls;b.innerHTML=label;b.addEventListener('mousedown',e=>e.preventDefault());return b};
+
+/* ---------- 폴더창 ---------- */
+const side=document.querySelector('aside');
+if(side){
+  const close=side.querySelector('.sidebrand .panel-close');const ws=[...side.querySelectorAll('.label')].find(l=>l.textContent.trim()==='WORKSPACE');
+  if(ws){ws.classList.add('ws-label');ws.innerHTML='<span>WORKSPACE</span>';if(close)ws.append(close)}
+  const fl=side.querySelector('.folderlabel');
+  if(fl&&!fl.querySelector('.folder-menu-btn')){const b=mmBtn('⋯','folder-menu-btn');b.title='폴더 메뉴';b.setAttribute('aria-label','폴더 메뉴');fl.append(b);
+    const sortSel=$('foldersort');
+    b.onclick=()=>A.menuAt(b,[{label:'새 폴더',onClick:()=>addFolder()},{label:'정렬',items:()=>[...sortSel.options].map(o=>({label:o.textContent.trim(),checked:sortSel.value===o.value,onClick:()=>{sortSel.value=o.value;sortSel.dispatchEvent(new Event('change',{bubbles:true}))}}))},'-',{label:'폴더 순서·구조 관리',onClick:()=>folderManager()}])}
+}
+
+/* ---------- 목록창 ---------- */
+const createbar=document.querySelector('.createbar');
+if(createbar&&!document.querySelector('.new-row')){const row=document.createElement('div');row.className='new-row';const main=mmBtn('＋ 새 메모','new-main');const more=mmBtn('▾','new-more');more.title='다른 종류로 만들기';more.setAttribute('aria-label','다른 종류로 만들기');row.append(main,more);createbar.before(row);
+  main.onclick=()=>newNote({type:'note'});
+  const formats=()=>Object.entries(D?.formats||{}).filter(([id])=>id!=='free').map(([id,f])=>({label:`${f.icon||''} ${f.name}`.trim(),onClick:()=>{D.pendingType='note';D.create(id)}}));
+  more.onclick=()=>A.menuAt(more,[{label:'✧ 아이디어',onClick:()=>newNote({type:'idea'})},{label:'↗ 링크',onClick:()=>linkDialog()},'-',{label:'양식으로 새 메모',items:formats}])}
+const sortrow=document.querySelector('.sortrow');
+if(sortrow&&!sortrow.querySelector('.view-btn')){const b=mmBtn('보기 ▾','mm-btn view-btn');sortrow.append(b);
+  const types=[...document.querySelectorAll('.typefilters [data-filter]')].map(x=>({id:x.dataset.filter,label:x.textContent.trim()}));
+  const sortSel=$('sort'),dens=$('list-density');
+  b.onclick=()=>A.menuAt(b,[
+    {label:'종류',items:()=>types.map(t=>({label:t.label,checked:(typeof typeFilter!=='undefined'?typeFilter:'all')===t.id,onClick:()=>filterType(t.id)}))},
+    {label:'정렬',items:()=>[...sortSel.options].map(o=>({label:o.textContent.replace('↕','').trim(),checked:sortSel.value===o.value,onClick:()=>{sortSel.value=o.value;sortSel.dispatchEvent(new Event('change',{bubbles:true}))}}))},
+    ...(dens?[{label:'목록 표시',items:()=>[...dens.options].map(o=>({label:o.textContent.trim(),checked:dens.value===o.value,onClick:()=>{dens.value=o.value;dens.dispatchEvent(new Event('change',{bubbles:true}))}}))}]:[])])}
+// 종류 필터가 걸려 있으면 표시 칩
+const prevRL=renderList;renderList=function(){prevRL.apply(this,arguments);const row=document.querySelector('.sortrow');if(!row)return;let chip=row.querySelector('.filter-chip');const t=typeof typeFilter!=='undefined'?typeFilter:'all';
+  if(t&&t!=='all'){const label=document.querySelector(`.typefilters [data-filter="${t}"]`)?.textContent.trim()||t;if(!chip){chip=document.createElement('span');chip.className='filter-chip';row.querySelector('#count')?.after(chip)}chip.innerHTML=`${esc(label)}만 <button type="button" aria-label="종류 필터 해제">×</button>`;chip.querySelector('button').onclick=()=>filterType('all')}else chip?.remove()};
+// 카드 메뉴에 '나란히 비교' 추가
+const prevCM=A.cardMenu;A.cardMenu=function(id){prevCM.apply(this,arguments);const n=db.notes.find(x=>x.id===id);const row=$('dialog').querySelector('.card-menu .row');if(!n||n.deleted||!row||typeof compareWith!=='function')return;const b=document.createElement('button');b.type='button';b.textContent='◫ 나란히 비교';b.onclick=()=>{closeModal();compareWith(id)};row.querySelector('button')?.after(b)};
+
+/* ---------- 편집기: 형광펜 · 삽입(링크·이미지·표·구분선) ---------- */
+const ed=$('editor'),tb=$('toolbar');
+const range=()=>{const s=getSelection();if(s.rangeCount&&ed.contains(s.anchorNode))return s.getRangeAt(0);return typeof savedRange!=='undefined'&&savedRange&&ed.contains(savedRange.commonAncestorContainer)?savedRange:null};
+const cellAt=()=>{const r=range();let n=r?.startContainer;if(n&&n.nodeType===3)n=n.parentElement;const c=n?.closest?.('td,th');return c&&c.closest('table.memo-table')&&ed.contains(c)?c:null};
+const putCaret=el=>{if(!el)return;const r=document.createRange();r.selectNodeContents(el);r.collapse(true);const s=getSelection();s.removeAllRanges();s.addRange(r);try{savedRange=r.cloneRange()}catch{}};
+const keepSel=()=>{const s=getSelection();if(s.rangeCount&&ed.contains(s.anchorNode)){try{savedRange=s.getRangeAt(0).cloneRange()}catch{}}};
+const emptyCell=tag=>`<${tag}><br></${tag}>`;
+A.table={
+  insert:(rows=3,cols=3)=>{fmt('insertHTML',`<table class="memo-table" data-new="1"><tbody>${Array.from({length:rows},()=>`<tr>${emptyCell('td').repeat(cols)}</tr>`).join('')}</tbody></table><p><br></p>`);const nt=ed.querySelector('table[data-new]');if(nt){nt.removeAttribute('data-new');putCaret(nt.rows[0].cells[0]);update()}},
+  addRow:()=>{const c=cellAt();if(!c)return;const tr=c.parentElement;const n=document.createElement('tr');n.innerHTML=[...tr.children].map(()=>emptyCell('td')).join('');tr.after(n);putCaret(n.children[c.cellIndex]);update()},
+  addCol:()=>{const c=cellAt();if(!c)return;const i=c.cellIndex;for(const tr of c.closest('table').rows){const ref=tr.children[i];const n=document.createElement(ref?.tagName==='TH'?'th':'td');n.innerHTML='<br>';(ref?ref.after(n):tr.append(n))}putCaret(c.parentElement.children[i+1]);update()},
+  delRow:()=>{const c=cellAt();if(!c)return;A.checkpoint?.('표 편집 전');const t=c.closest('table');const tr=c.parentElement;if(t.rows.length<=1){A.table.del();return}const next=tr.nextElementSibling||tr.previousElementSibling;tr.remove();putCaret(next?.children[Math.min(c.cellIndex,next.children.length-1)]);update()},
+  delCol:()=>{const c=cellAt();if(!c)return;A.checkpoint?.('표 편집 전');const t=c.closest('table'),i=c.cellIndex;if(t.rows[0].cells.length<=1){A.table.del();return}const tr=c.parentElement;for(const r of [...t.rows])r.children[i]?.remove();putCaret(tr.children[Math.max(0,i-1)]);update()},
+  del:()=>{const c=cellAt();if(!c)return;A.checkpoint?.('표 삭제 전');const t=c.closest('table');const p=document.createElement('p');p.innerHTML='<br>';t.replaceWith(p);putCaret(p);update()}};
+// 표 안에서 Tab = 다음 칸, 마지막 칸 Tab = 새 줄
+ed.addEventListener('keydown',e=>{if(e.key!=='Tab')return;const c=cellAt();if(!c)return;e.preventDefault();e.stopPropagation();const cells=[...c.closest('table').querySelectorAll('td,th')];const i=cells.indexOf(c)+(e.shiftKey?-1:1);if(i>=cells.length){A.table.addRow();putCaret(c.closest('table').rows[c.closest('table').rows.length-1].cells[0]);return}if(i>=0){const r=document.createRange();r.selectNodeContents(cells[i]);r.collapse(false);const s=getSelection();s.removeAllRanges();s.addRange(r)}},true);
+if(tb&&!tb.querySelector('.tb-insert')){
+  const linkBtn=[...tb.querySelectorAll('button')].find(b=>/insertLink/.test(b.getAttribute('onclick')||''));const imgBtn=[...tb.querySelectorAll('button')].find(b=>/image/.test(b.getAttribute('onclick')||''));
+  // 형광펜
+  const colorAnchor=tb.querySelector('.colorlabel');const hl=mmBtn('형광펜 ▾','tb-dd tb-hl');hl.title='형광펜';
+  const HL=[['노랑','#fff1a8'],['초록','#d7f0c9'],['하늘','#d3e8fb'],['분홍','#fbd5df']];
+  hl.onclick=()=>{keepSel();A.menuAt(hl,[...HL.map(([l,c])=>({label:l,onClick:()=>fmt('hiliteColor',c)})),'-',{label:'형광펜 지우기',onClick:()=>fmt('hiliteColor','transparent')}])};
+  {let anchor=tb.querySelector('[aria-label*="보라"]')||colorAnchor;while(anchor&&anchor.parentElement!==tb)anchor=anchor.parentElement;anchor?anchor.after(hl):tb.append(hl)}
+  // 삽입
+  const ins=mmBtn('삽입 ▾','tb-dd tb-insert');ins.title='링크·이미지·표·구분선';
+  ins.onclick=()=>{keepSel();const inTable=!!cellAt();A.menuAt(ins,[
+    ...(linkBtn?[{label:'↗ 링크',onClick:()=>linkBtn.click()}]:[]),
+    ...(imgBtn?[{label:'▧ 이미지',onClick:()=>imgBtn.click()}]:[]),
+    {label:'▦ 표',items:()=>[{label:'새 표 (3×3)',onClick:()=>A.table.insert()},{label:'새 표 (2×4)',onClick:()=>A.table.insert(4,2)},'-',
+      {label:'아래에 줄 추가',disabled:!inTable,onClick:A.table.addRow},{label:'오른쪽에 칸 추가',disabled:!inTable,onClick:A.table.addCol},
+      {label:'이 줄 삭제',disabled:!inTable,onClick:A.table.delRow},{label:'이 칸 삭제',disabled:!inTable,onClick:A.table.delCol},'-',{label:'표 삭제',disabled:!inTable,onClick:A.table.del}]},
+    {label:'― 구분선',onClick:()=>fmt('insertHTML','<hr><p><br></p>')}])};
+  if(linkBtn){linkBtn.before(ins);linkBtn.style.display='none'}else tb.append(ins);if(imgBtn)imgBtn.style.display='none';
+}
+// 아이디어 모드에서는 새 버튼도 숨김(도구 막대 자체가 숨겨짐) — 별도 처리 불필요
+})();
+
+/* ===== 11차 (2026-10-30): 편집기 위쪽 메뉴 정리 — 고정 · 내보내기 · 버전 ▾ · ⋯ ===== */
+(function(){'use strict';
+const A=window.MEMOAApp,bar=$('pin')?.parentElement;if(!bar||bar.querySelector('.act-version'))return;
+const st=document.createElement('style');st.textContent=`.actions .act-hidden{display:none!important}.actions .act-dd{white-space:nowrap}`;document.head.append(st);
+const btns=[...bar.querySelectorAll(':scope>button')];const byText=t=>btns.find(b=>b.textContent.trim()===t);
+const copyB=btns.find(b=>/copyText/.test(b.getAttribute('onclick')||'')),cmpB=$('compare-button'),verB=byText('버전 관리'),dupB=byText('버전 복제'),histB=byText('변경 이력'),delB=$('del');
+const mk=(label,cls)=>{const b=document.createElement('button');b.type='button';b.className='act-dd '+cls;b.textContent=label;b.addEventListener('mousedown',e=>e.preventDefault());return b};
+const ver=mk('버전 ▾','act-version'),more=mk('⋯','act-more');more.setAttribute('aria-label','더 보기');more.title='복사 · 휴지통';
+const label=b=>b?.textContent.trim()||'';
+ver.onclick=()=>A.menuAt(ver,[...(histB?[{label:'변경 이력',onClick:()=>histB.click()}]:[]),'-',...(verB?[{label:'버전 관리',onClick:()=>verB.click()}]:[]),...(dupB?[{label:'버전 복제 (새 버전으로 열기)',onClick:()=>dupB.click()}]:[]),'-',...(cmpB?[{label:label(cmpB).replace(/^◫\s*/,'')||'나란히 비교',onClick:()=>cmpB.click()}]:[])].filter((x,i,a)=>!(x==='-'&&(i===0||a[i-1]==='-'||i===a.length-1))));
+more.onclick=()=>A.menuAt(more,[...(copyB?[{label:'텍스트 복사',onClick:()=>copyB.click()}]:[]),'-',{label:'휴지통으로',onClick:()=>delB?.click()}]);
+for(const b of [copyB,cmpB,verB,dupB,histB])b?.classList.add('act-hidden');
+const exportB=btns.find(b=>/exportMenu/.test(b.getAttribute('onclick')||''));(exportB||$('pin')).after(ver);bar.append(more);
+// 휴지통 메모: '복원'·'영구 삭제'는 바로 보이게, 아니면 휴지통 버튼은 ⋯ 안으로
+function sync(){const n=note(),trashed=!!n?.deleted;delB?.classList.toggle('act-hidden',!trashed);more.classList.toggle('act-hidden',trashed);ver.classList.toggle('act-hidden',trashed)}
+const prevRE=renderEditor;renderEditor=function(){prevRE.apply(this,arguments);sync()};sync();
 })();
