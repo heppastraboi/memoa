@@ -845,3 +845,44 @@ function guard(el){if(!el||el._memoaGuard)return;el._memoaGuard=true;let lastId=
     proto.set.call(this,v);if(o)restore(this,o);if(sc!=null&&top!=null)sc.scrollTop=top}})}
 guard($('editor'));guard($('quick-body'));
 })();
+
+/* ===== 13차 (2026-11-20): To Do List 순서 바꾸기 — 손잡이 끌기(PC·터치) + Alt+↑/↓ ===== */
+(function(){'use strict';
+const A=window.MEMOAApp,D=window.MEMOADoc,ed=$('editor');if(!ed)return;
+const st=document.createElement('style');st.textContent=`
+.task-row [data-task-drag]{flex:none;align-self:center;border:0;background:none;color:var(--muted,#8a9083);cursor:grab;padding:4px 2px;font-size:15px;line-height:1;touch-action:none;opacity:.45;user-select:none;-webkit-user-select:none}
+.task-row:hover [data-task-drag],.task-row.task-dragging [data-task-drag]{opacity:1}
+@media (pointer:coarse){.task-row [data-task-drag]{opacity:.8;padding:6px 6px}}
+.task-row.task-dragging{background:var(--hover,#eef3e8);box-shadow:0 4px 14px rgba(0,0,0,.12);border-radius:8px;position:relative;z-index:2}
+.todo-sheet.task-sorting{user-select:none;-webkit-user-select:none}`;document.head.append(st);
+const HANDLE='<button type="button" contenteditable="false" data-task-drag aria-label="순서 바꾸기 (끌기 또는 Alt+↑/↓)" title="끌어서 순서 바꾸기 · Alt+↑/↓">⠿</button>';
+function ensureHandles(){const n=note();if(!n||n.template!=='todo')return;ed.querySelectorAll('.todo-sheet .task-row').forEach(r=>{if(!r.querySelector(':scope>[data-task-drag]'))r.insertAdjacentHTML('afterbegin',HANDLE)})}
+const prevRE=renderEditor;renderEditor=function(){prevRE.apply(this,arguments);ensureHandles()};
+if(D?.addBlock){const prevAdd=D.addBlock;D.addBlock=function(kind){const r=prevAdd.apply(this,arguments);if(kind==='task')ensureHandles();return r}}
+const save=()=>{update();D?.taskCount?.()};
+
+/* 끌기: 마우스·터치 모두 (pointer events) */
+let drag=null;
+ed.addEventListener('pointerdown',e=>{const h=e.target.closest?.('[data-task-drag]');if(!h||!ed.contains(h))return;const row=h.closest('.task-row'),sheet=row?.closest('.todo-sheet');if(!row||!sheet)return;
+  e.preventDefault();e.stopPropagation();h.setPointerCapture?.(e.pointerId);A.checkpoint?.('할 일 순서 바꾸기 전');
+  drag={row,sheet,h,id:e.pointerId,moved:false,start:[...sheet.children].indexOf(row)};row.classList.add('task-dragging');sheet.classList.add('task-sorting')},true);
+ed.addEventListener('pointermove',e=>{if(!drag||e.pointerId!==drag.id)return;e.preventDefault();const y=e.clientY;
+  const rows=[...drag.sheet.querySelectorAll(':scope>.task-row')].filter(r=>r!==drag.row);let before=null;
+  for(const r of rows){const b=r.getBoundingClientRect();if(y<b.top+b.height/2){before=r;break}}
+  if(before!==drag.row.nextElementSibling||(!before&&drag.row!==drag.sheet.lastElementChild)){before?drag.sheet.insertBefore(drag.row,before):drag.sheet.append(drag.row);drag.moved=true}
+  // 화면 끝에서 자동 스크롤
+  const sc=ed.closest('.paper,section,main')||document.scrollingElement;if(y<60)sc.scrollTop-=12;else if(y>innerHeight-60)sc.scrollTop+=12},true);
+function end(e){if(!drag||(e&&e.pointerId!==drag.id))return;const {row,sheet,moved,start}=drag;row.classList.remove('task-dragging');sheet.classList.remove('task-sorting');drag=null;if(moved&&[...sheet.children].indexOf(row)!==start)save()}
+ed.addEventListener('pointerup',end,true);ed.addEventListener('pointercancel',end,true);
+ed.addEventListener('click',e=>{if(e.target.closest?.('[data-task-drag]')){e.preventDefault();e.stopPropagation()}},true);
+
+/* 키보드: 할 일 안에서 Alt+↑ / Alt+↓ */
+ed.addEventListener('keydown',e=>{if(!e.altKey||(e.key!=='ArrowUp'&&e.key!=='ArrowDown'))return;const s=getSelection();if(!s.rangeCount)return;let node=s.anchorNode;if(node?.nodeType===3)node=node.parentElement;const row=node?.closest?.('.todo-sheet .task-row');if(!row||!ed.contains(row))return;
+  const sib=e.key==='ArrowUp'?row.previousElementSibling:row.nextElementSibling;if(!sib?.classList.contains('task-row'))return;e.preventDefault();
+  const text=row.querySelector('.task-text');const pre=document.createRange();pre.selectNodeContents(text);pre.setEnd(s.anchorNode,s.anchorOffset);const off=pre.toString().length;
+  e.key==='ArrowUp'?sib.before(row):sib.after(row);
+  const tw=document.createTreeWalker(text,NodeFilter.SHOW_TEXT);let n,acc=0,done=false;while((n=tw.nextNode())){if(acc+n.length>=off){const r=document.createRange();r.setStart(n,off-acc);r.collapse(true);s.removeAllRanges();s.addRange(r);done=true;break}acc+=n.length}
+  if(!done){const r=document.createRange();r.selectNodeContents(text);r.collapse(false);s.removeAllRanges();s.addRange(r)}
+  save()},true);
+ensureHandles();
+})();
