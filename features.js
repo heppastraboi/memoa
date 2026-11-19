@@ -827,3 +827,21 @@ const exportB=btns.find(b=>/exportMenu/.test(b.getAttribute('onclick')||''));(ex
 function sync(){const n=note(),trashed=!!n?.deleted;delB?.classList.toggle('act-hidden',!trashed);more.classList.toggle('act-hidden',trashed);ver.classList.toggle('act-hidden',trashed)}
 const prevRE=renderEditor;renderEditor=function(){prevRE.apply(this,arguments);sync()};sync();
 })();
+
+/* ===== 12차 (2026-11-20): 입력 중 커서 튐 방지 — 동기화·저장 후 다시 그릴 때 본문이 같으면 건드리지 않음 ===== */
+(function(){'use strict';
+const proto=Object.getOwnPropertyDescriptor(Element.prototype,'innerHTML');if(!proto?.set)return;
+function offsets(root){const s=getSelection();if(!s.rangeCount)return null;const r=s.getRangeAt(0);if(!root.contains(r.startContainer)||!root.contains(r.endContainer))return null;const pre=document.createRange();pre.selectNodeContents(root);pre.setEnd(r.startContainer,r.startOffset);const start=pre.toString().length;pre.setEnd(r.endContainer,r.endOffset);return {start,end:pre.toString().length}}
+function point(root,target){const tw=document.createTreeWalker(root,NodeFilter.SHOW_TEXT);let n,acc=0,last=null;while((n=tw.nextNode())){last=n;if(acc+n.length>=target)return [n,target-acc];acc+=n.length}return last?[last,last.length]:[root,root.childNodes.length]}
+function restore(root,o){try{const r=document.createRange();r.setStart(...point(root,o.start));r.setEnd(...point(root,o.end));const s=getSelection();s.removeAllRanges();s.addRange(r)}catch{}}
+function scroller(el){for(let p=el;p&&p!==document.body;p=p.parentElement){const cs=getComputedStyle(p);if(/(auto|scroll)/.test(cs.overflowY)&&p.scrollHeight>p.clientHeight)return p}return document.scrollingElement}
+function guard(el){if(!el||el._memoaGuard)return;el._memoaGuard=true;let lastId=null,composing=false;
+  el.addEventListener('compositionstart',()=>composing=true);el.addEventListener('compositionend',()=>composing=false);
+  Object.defineProperty(el,'innerHTML',{configurable:true,get(){return proto.get.call(this)},set(v){v=String(v??'');const id=typeof current!=='undefined'?current:null;const same=id&&id===lastId;lastId=id;
+    if(same&&v===proto.get.call(this))return;                 // 내용이 같으면 다시 그리지 않음 → 커서·한글 조합 그대로
+    const focused=same&&(document.activeElement===this||this.contains(document.activeElement));
+    if(focused&&composing)return;                              // 한글 조합 중에는 다른 기기 변경보다 지금 입력을 우선(곧 저장되어 반영)
+    const o=focused?offsets(this):null,sc=focused?scroller(this):null,top=sc?.scrollTop;
+    proto.set.call(this,v);if(o)restore(this,o);if(sc!=null&&top!=null)sc.scrollTop=top}})}
+guard($('editor'));guard($('quick-body'));
+})();
