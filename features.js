@@ -886,3 +886,36 @@ ed.addEventListener('keydown',e=>{if(!e.altKey||(e.key!=='ArrowUp'&&e.key!=='Arr
   save()},true);
 ensureHandles();
 })();
+
+/* ===== 14차 (2026-11-20): 포스트잇 순서 바꾸기 — 왼쪽 위 손잡이(⠿)로 끌면 카드들이 실시간으로 자리를 비킴 + Alt+방향키 ===== */
+(function(){'use strict';
+const A=window.MEMOAApp,ed=$('editor');if(!ed)return;
+const st=document.createElement('style');st.textContent=`
+.sticky-tools [data-sticky-drag]{cursor:grab;font-size:15px;padding:2px 6px;border-radius:5px}
+.sticky-tools [data-sticky-drag]:hover{background:#ffffff80}
+.sticky-card.sticky-lift{transform:scale(1.03) rotate(-1deg);box-shadow:0 12px 28px rgba(0,0,0,.22);z-index:3;position:relative;transition:transform .12s,box-shadow .12s}
+.postit-board.sticky-sorting,.postit-board.sticky-sorting *{cursor:grabbing!important;user-select:none;-webkit-user-select:none}
+.sticky-tools [data-sticky-shift]{display:none!important}`;document.head.append(st);
+let d=null;
+ed.addEventListener('pointerdown',e=>{const h=e.target.closest?.('[data-sticky-drag]');if(!h||!ed.contains(h))return;const card=h.closest('.sticky-card'),board=card?.closest('.postit-board');if(!card||!board)return;
+  e.preventDefault();e.stopPropagation();h.setPointerCapture?.(e.pointerId);
+  d={card,board,id:e.pointerId,x:e.clientX,y:e.clientY,active:false,start:[...board.children].indexOf(card)}},true);   // 원래 처리(놓을 때만 교환)는 막음
+document.addEventListener('pointermove',e=>{if(!d||e.pointerId!==d.id)return;e.preventDefault();e.stopPropagation();
+  if(!d.active){if(Math.abs(e.clientX-d.x)+Math.abs(e.clientY-d.y)<6)return;d.active=true;A.checkpoint?.('포스트잇 순서 바꾸기 전');d.card.classList.add('sticky-lift');d.board.classList.add('sticky-sorting')}
+  const over=[...d.board.querySelectorAll(':scope>.sticky-card')].find(c=>{if(c===d.card)return false;const r=c.getBoundingClientRect();return e.clientX>=r.left&&e.clientX<=r.right&&e.clientY>=r.top&&e.clientY<=r.bottom});
+  if(over){const kids=[...d.board.children];kids.indexOf(d.card)<kids.indexOf(over)?over.after(d.card):over.before(d.card)}
+  const sc=ed.closest('.paper,section,main')||document.scrollingElement;if(e.clientY<60)sc.scrollTop-=14;else if(e.clientY>innerHeight-60)sc.scrollTop+=14},true);
+function end(e){if(!d||(e&&e.pointerId!=null&&e.pointerId!==d.id))return;const x=d;d=null;x.card.classList.remove('sticky-lift');x.board.classList.remove('sticky-sorting');if(x.active&&[...x.board.children].indexOf(x.card)!==x.start)update()}
+document.addEventListener('pointerup',e=>{if(d){e.stopPropagation();end(e)}},true);document.addEventListener('pointercancel',e=>{if(d){e.stopPropagation();end(e)}},true);addEventListener('blur',()=>end());
+// 키보드: 카드 글자 안에서 Alt+← / Alt+→ (Alt+↑/↓도 같은 동작)
+ed.addEventListener('keydown',e=>{if(!e.altKey||!/^Arrow(Left|Right|Up|Down)$/.test(e.key))return;const s=getSelection();let n=s.anchorNode;if(n?.nodeType===3)n=n.parentElement;const card=n?.closest?.('.postit-board .sticky-card');if(!card||!ed.contains(card))return;
+  const back=e.key==='ArrowLeft'||e.key==='ArrowUp',sib=back?card.previousElementSibling:card.nextElementSibling;if(!sib?.classList.contains('sticky-card'))return;e.preventDefault();
+  const body=card.querySelector('.sticky-body');const pre=document.createRange();pre.selectNodeContents(body);pre.setEnd(s.anchorNode,s.anchorOffset);const off=pre.toString().length;
+  back?sib.before(card):sib.after(card);
+  const tw=document.createTreeWalker(body,NodeFilter.SHOW_TEXT);let t,acc=0,ok=false;while((t=tw.nextNode())){if(acc+t.length>=off){const r=document.createRange();r.setStart(t,off-acc);r.collapse(true);s.removeAllRanges();s.addRange(r);ok=true;break}acc+=t.length}
+  if(!ok){body.focus();const r=document.createRange();r.selectNodeContents(body);r.collapse(false);s.removeAllRanges();s.addRange(r)}
+  update()},true);
+// 손잡이 안내 문구
+const tip=()=>ed.querySelectorAll('.postit-board [data-sticky-drag]').forEach(h=>{h.title='끌어서 순서 바꾸기 · 카드 안에서 Alt+방향키';h.setAttribute('aria-label','카드 순서 바꾸기')});
+const prevRE=renderEditor;renderEditor=function(){prevRE.apply(this,arguments);tip()};tip();
+})();
